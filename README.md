@@ -1,8 +1,25 @@
-# AD_Moviola
+# DemoBrief
 
-AD_Moviola is a local tool that converts a screen recording of a software tutorial into a compact `racconto.md` for AI agents, plus indexed frames for the moments where actions occur.
+Turn screen-recorded software demos and tutorials into an illustrated Markdown brief for AI agents.
+
+Repository: https://github.com/AndreaD73/DemoBrief
 
 It is designed only for screen recordings of software tutorials. It is not a general-purpose video understanding tool. Interface and messages are in Italian.
+
+## Why DemoBrief
+
+A 4-5 minute software tutorial becomes a brief of about 2,000-4,000 tokens. Across 7 real tutorials, DemoBrief produced about 3,000 tokens on average, compared with about 45,000 tokens for a frame-based tool that makes an agent inspect the video.
+
+Processing is local and free: DemoBrief uses no cloud service and requires no API key.
+
+Processing takes a few minutes per video on a PC with an NVIDIA GPU, and longer on a CPU-only computer.
+
+DemoBrief is an aid, or skill, for AI agents rather than an autonomous summarizer:
+
+1. DemoBrief produces `racconto.md` and `fotogrammi/`.
+2. Pass the output folder to an agent such as Claude Code or Codex and ask it to write the complete specification document, opening only the images it needs.
+
+The agent reads a few thousand tokens instead of watching the original video.
 
 ## Platforms
 
@@ -30,6 +47,7 @@ Without `--uscita` on Linux/macOS or `-Uscita` on Windows, the output is written
 - ffmpeg and ffprobe.
 - yt-dlp, installed from `requirements.txt`, used only for video links.
 - Optional NVIDIA GPU on Windows or Linux.
+- OCR runs on CPU by default. GPU OCR is experimental: install `onnxruntime-gpu==1.31.0` in place of `onnxruntime`; it is used automatically when CUDA works.
 - Optional Ollama for `VISTA` lines.
 - On Linux: `sudo apt install ffmpeg python3-venv`.
 
@@ -147,7 +165,7 @@ python -m pytest
 
 ## Legal notice
 
-yt-dlp is third-party software. AD_Moviola does not decrypt or bypass DRM or other access protections, and protected content is not supported.
+yt-dlp is third-party software. DemoBrief does not decrypt or bypass DRM or other access protections, and protected content is not supported.
 
 Downloading content from a website may violate that website's terms. The user is solely responsible for the download and use of the content. Use only videos that you have the right to use.
 

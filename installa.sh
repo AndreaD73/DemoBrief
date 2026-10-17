@@ -22,6 +22,7 @@ passo() {
     printf '==> %s\n' "$1"
 }
 
+passo "Installo DemoBrief"
 passo "Cerco Python 3.10-3.12"
 BASE=""
 for candidato in python3.12 python3.11 python3.10 python3; do
@@ -64,12 +65,8 @@ passo "Installo le dipendenze"
 "$PY" -m pip install -r "$QUI/requirements.txt" || exit 1
 
 if [ "$(uname -s)" != "Darwin" ] && command -v nvidia-smi >/dev/null 2>&1; then
-    passo "Scheda NVIDIA trovata: installo il runtime GPU e le librerie CUDA"
-    "$PY" -m pip uninstall -y onnxruntime
-    if ! "$PY" -m pip install -r "$QUI/requirements-gpu.txt"; then
-        printf '%s\n' "Runtime GPU non installato: reinstallo onnxruntime e uso il processore." >&2
-        "$PY" -m pip install onnxruntime==1.31.0 || exit 1
-    fi
+    passo "Scheda NVIDIA trovata: installo le librerie CUDA per Whisper"
+    "$PY" -m pip install -r "$QUI/requirements-gpu.txt" || exit 1
 else
     printf '%s\n' "    Runtime GPU non usato: uso il processore."
 fi
@@ -105,4 +102,4 @@ destinazione.write_text(testo.replace("{{STRUMENTO}}", str(radice)), encoding="u
 PY
 fi
 
-printf '%s\n' "Fatto. Uso: ./leggi-video.sh <file video oppure URL>"
+printf '%s\n' "DemoBrief installato. Uso: ./leggi-video.sh <file video oppure URL>"

@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $py = Join-Path $PSScriptRoot 'venv\Scripts\python.exe'
 if (-not (Test-Path $py)) { Write-Error 'Strumento non installato: eseguire prima installa.ps1'; exit 2 }
-Write-Host "AD_Moviola $((Get-Content (Join-Path $PSScriptRoot 'version.txt') -TotalCount 1))"
+Write-Host "DemoBrief $((Get-Content (Join-Path $PSScriptRoot 'version.txt') -TotalCount 1))"
 $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
 $argomenti = @((Join-Path $PSScriptRoot 'src\leggi_video.py'), $Video)

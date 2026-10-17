@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Schema, persistenza e indice spazio-temporale degli eventi AD_Moviola."""
+"""Schema, persistenza e indice spazio-temporale degli eventi DemoBrief."""
 import bisect
 import json
 import os

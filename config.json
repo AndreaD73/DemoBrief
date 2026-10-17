@@ -9,6 +9,7 @@
     "dispositivo": "auto"
   },
   "lingua": "auto",
+  "tetto_fase_minuti": 30,
   "processi_ocr": 3,
   "ocr_gpu": true,
   "processi_ocr_gpu": 2,

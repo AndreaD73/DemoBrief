@@ -13,7 +13,7 @@ if [ "$#" -lt 1 ]; then
     exit 2
 fi
 
-printf 'AD_Moviola %s\n' "$(head -n 1 "$QUI/version.txt")"
+printf 'DemoBrief %s\n' "$(head -n 1 "$QUI/version.txt")"
 export PYTHONUTF8=1
 export PYTHONIOENCODING=utf-8
 exec "$PY" "$QUI/src/leggi_video.py" "$@"

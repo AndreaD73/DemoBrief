@@ -23,6 +23,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # con python -I la cartella dello script non e' nel percorso
 import eventi
+import comune
 from testi import pulisci_ocr, ratio, dig, let
 
 VERSIONE = "0.3"
@@ -718,7 +719,7 @@ def leggi(video, lavoro, lettore=None):
     t_ocr = time.perf_counter(); stat["secondi_video"] = round(t_ocr - t_lettura, 1)
     candidati = rivelatore.fine()
     stat.update(rivelatore.scartati); stat.update(barre.stat)
-    diario = [] if os.environ.get("AD_MOVIOLA_STATO_DIARIO") else None
+    diario = [] if comune.ambiente("STATO_DIARIO") else None
     cambi = nomina(candidati, lettore, w, h, stat, diario)
     parole = _json(os.path.join(lavoro, "parole.json"), [])
     clic = _clic_cursore(lavoro)
@@ -743,7 +744,7 @@ def main(argv):
     dati = leggi(video, lavoro); calcolati = calcola(dati); secondi = time.perf_counter() - inizio
     extra = dict(dati.get("stat", {})); extra["ram_picco_mb"] = ram_picco_mb()
     eventi.scrivi(os.path.join(lavoro, "eventi_stato.json"), documento(calcolati, secondi, len(dati["letture"]), extra))
-    if dati.get("diario") is not None:                    # solo con AD_MOVIOLA_STATO_DIARIO: tutti i candidati e il loro esito
+    if dati.get("diario") is not None:                    # con DEMOBRIEF_STATO_DIARIO o il compatibile AD_MOVIOLA_STATO_DIARIO
         with open(os.path.join(lavoro, "stato_diario.json"), "w", encoding="utf-8") as f:
             json.dump({"candidati": dati["diario"], "barre": dati.get("barre", []), "cambi": dati.get("cambi", [])}, f, ensure_ascii=False)
     print("canale_stato: eventi=%d letture=%d tempo=%.1fs ram_picco=%s MB scartati=%s" % (len(calcolati), len(dati["letture"]), secondi, extra["ram_picco_mb"], json.dumps(dati.get("stat", {}), ensure_ascii=False)))

@@ -47,19 +47,24 @@ class _MotoreConFallback:
                     rec_use_cuda=True,
                     cls_use_cuda=True,
                 )
+                immagine_prova = np.full((64, 256, 3), 255, dtype=np.uint8)
+                self._motore(immagine_prova)
             except Exception:
-                self._attiva_processore()
+                self._attiva_processore(cuda_non_funzionante=True)
         else:
             self._attiva_processore()
 
-    def _attiva_processore(self):
+    def _attiva_processore(self, cuda_non_funzionante=False):
         self._cuda = False
         self._prima_chiamata = False
         self._motore = self._rapidocr(
             intra_op_num_threads=1,
             inter_op_num_threads=1,
         )
-        print('OCR su processore', flush=True)
+        if cuda_non_funzionante:
+            print('OCR su processore (CUDA non funzionante)', flush=True)
+        else:
+            print('OCR su processore', flush=True)
 
     def __call__(self, *args, **kwargs):
         if not self._prima_chiamata:
@@ -67,7 +72,7 @@ class _MotoreConFallback:
         try:
             risultato = self._motore(*args, **kwargs)
         except Exception:
-            self._attiva_processore()
+            self._attiva_processore(cuda_non_funzionante=True)
             return self._motore(*args, **kwargs)
         self._prima_chiamata = False
         print('OCR su CUDA', flush=True)
@@ -82,7 +87,7 @@ _eng = None
 def _init():
     global _eng
     from rapidocr_onnxruntime import RapidOCR
-    tempi.configura(os.environ['AD_MOVIOLA_TEMPI_FASE'], os.environ['AD_MOVIOLA_TEMPI_LAVORO'], calcolo=False)
+    tempi.configura(comune.ambiente('TEMPI_FASE'), comune.ambiente('TEMPI_LAVORO'), calcolo=False)
     _eng = tempi.strumenta_rapidocr(
         _MotoreConFallback(RapidOCR, _cuda_disponibile())
     )
@@ -299,7 +304,7 @@ def scoperta(video, H, pool, stat):
     imgs = []
     for n, im in frames(video, '1/2', H):
         imgs.append(im)
-    res = esegui_ocr(pool, [('det:%d' % i, im) for i, im in enumerate(imgs)], os.environ['AD_MOVIOLA_TEMPI_LAVORO'], chunksize=2)
+    res = esegui_ocr(pool, [('det:%d' % i, im) for i, im in enumerate(imgs)], comune.ambiente('TEMPI_LAVORO'), chunksize=2)
     stat['det'] = len(imgs)
     widgets = []
     for i in range(len(imgs)):
@@ -531,7 +536,7 @@ def schermate(video, out):
 
 if __name__ == '__main__':
     fase = 'ocr_' + sys.argv[1]
-    os.environ['AD_MOVIOLA_TEMPI_FASE'] = fase
-    os.environ['AD_MOVIOLA_TEMPI_LAVORO'] = os.path.abspath(sys.argv[3])
+    os.environ['DEMOBRIEF_TEMPI_FASE'] = fase
+    os.environ['DEMOBRIEF_TEMPI_LAVORO'] = os.path.abspath(sys.argv[3])
     tempi.configura(fase, sys.argv[3], sys.argv[2])
     {'letture': letture, 'azione': azione, 'schermate': schermate}[sys.argv[1]](sys.argv[2], sys.argv[3])

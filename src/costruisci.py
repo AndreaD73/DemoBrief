@@ -369,7 +369,7 @@ def intestazione(tok):
     r1 = '# %s - durata %s - token stimati ~%d' % (titolo, mmss(DUR), tok)
     vf = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'version.txt')
     ver = open(vf, encoding='utf-8').read().strip() if os.path.exists(vf) else '?'
-    r2 = ('AD_Moviola ' + ver + '. ') + 'Fonti usate: %s.%s' % (', '.join(usate) or 'nessuna', (' ATTENZIONE: ' + meta['vista_nota']) if meta.get('vista_nota') else '')
+    r2 = ('DemoBrief ' + ver + '. ') + 'Fonti usate: %s.%s' % (', '.join(usate) or 'nessuna', (' ATTENZIONE: ' + meta['vista_nota']) if meta.get('vista_nota') else '')
     r3 = ('Legenda: [mm:ss] istante; VOCE = parlato; TESTO = scritte che cambiano a schermo (OCR); SCHERMO = righe nuove lette quando lo schermo si ferma su una vista nuova (dove: pagina, finestra, pannello); MOTO = azioni (mesh Ng = gesti sulla geometria, orbita Ns = rotazione vista, clicN = clic, taglio vista = cambio scena); '
  'VISTA = geometria nuova vista dall\'occhio (forma, zona). Immagini a richiesta: %s.' % meta.get('indice_fotogrammi', 'fotogrammi/indice.md'))
     if FX.legenda(): r3 += ' ' + FX.legenda() + '.'

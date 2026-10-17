@@ -8,6 +8,8 @@ $py = Join-Path $venv 'Scripts\python.exe'
 
 function Passo($m) { Write-Host ('==> ' + $m) -ForegroundColor Cyan }
 
+Passo 'Installo DemoBrief'
+
 # 1. Python 3.10-3.12 (le ruote di onnxruntime/opencv sono testate su queste versioni)
 Passo 'Cerco Python 3.10-3.12'
 $base = $null
@@ -50,14 +52,9 @@ Passo 'Installo le dipendenze (versioni fissate)'
 if ($LASTEXITCODE -ne 0) { throw 'pip install fallito' }
 $gpu = Get-Command nvidia-smi -ErrorAction SilentlyContinue
 if ($gpu) {
-    Passo 'Scheda NVIDIA trovata: installo il runtime GPU e le librerie CUDA'
-    & $py -m pip uninstall -y onnxruntime
+    Passo 'Scheda NVIDIA trovata: installo le librerie CUDA per Whisper'
     & $py -m pip install -r (Join-Path $qui 'requirements-gpu.txt')
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning 'Runtime GPU non installato: reinstallo onnxruntime e uso il processore.'
-        & $py -m pip install onnxruntime==1.31.0
-        if ($LASTEXITCODE -ne 0) { throw 'Ripristino di onnxruntime fallito' }
-    }
+    if ($LASTEXITCODE -ne 0) { throw 'Installazione delle librerie CUDA fallita' }
 } else {
     Write-Host '    Nessuna scheda NVIDIA: uso il processore (piu'' lento).'
 }
@@ -92,4 +89,4 @@ if ($InstallaSkill) {
     Write-Host ('    ' + $dest)
 }
 Write-Host ''
-Write-Host 'Fatto. Uso:  .\leggi-video.ps1 <file video oppure URL>' -ForegroundColor Green
+Write-Host 'DemoBrief installato. Uso:  .\leggi-video.ps1 <file video oppure URL>' -ForegroundColor Green

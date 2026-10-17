@@ -1,10 +1,10 @@
-# Licenze di terze parti
+# Licenze di terze parti di DemoBrief
 
 This file is in Italian; summary: all Python dependencies are permissive (MIT/BSD/Apache/MPL/LGPL via dynamic linking); NVIDIA CUDA wheels are proprietary and optional; ffmpeg is an external program.
 
 Verifica del 16 ottobre 2026 sui metadati dei pacchetti installati nel venv (`venv\Lib\site-packages\*.dist-info`, campi `License-Expression`, `License`, `Classifier`), sui file di licenza inclusi nei pacchetti e, per i modelli, sulla scheda del modello (Hugging Face / Ollama). Nulla e' ridistribuito insieme allo strumento: tutto viene scaricato dall'utente da PyPI, Hugging Face, Ollama o winget al momento dell'installazione.
 
-Codice dello strumento: MIT, vedi LICENSE.
+Codice di DemoBrief: MIT, vedi LICENSE.
 
 ## Da segnalare: licenze NON permissive o con condizioni
 

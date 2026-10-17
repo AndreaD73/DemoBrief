@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Fusione generica degli eventi; nessuna conoscenza dei singoli canali."""
 import glob, os, string
-import eventi
+import comune, eventi
 from testi import stessi
 
 SOGLIE={'default':0.50}; DOTI={'default':60.0}
@@ -14,10 +14,10 @@ class Fusione:
         self.out=out; self.parole=parole; self.frasi=frasi; self.testi=testi; self.schermate=schermate; self.movimenti=movimenti; self.durata=durata
         # sezioni spente: la variabile d'ambiente (anche vuota) vince; altrimenti config.json 'sezioni_spente'
         # TESTO e' disattivato nella configurazione predefinita per contenere la dimensione del racconto.
-        v=os.environ.get('AD_MOVIOLA_SENZA')
+        v=comune.ambiente('SENZA')
         if v is None:
             try:
-                import comune; v=','.join(comune.config().get('sezioni_spente',[]))
+                v=','.join(comune.config().get('sezioni_spente',[]))
             except Exception: v=''
         self.senza=set(x.strip().upper() for x in v.split(',') if x.strip())
         self.stat={}; self.documenti=[]; self.eventi=[]; self.per_frase={i:[] for i in range(len(frasi))}; self.righe={i:[] for i in range(len(frasi))}; self.sciolti=[]; self.legende={}; self.formati={}; self.scene=eventi.Scena(out,schermate); self._carica()

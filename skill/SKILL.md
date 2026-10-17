@@ -3,9 +3,9 @@ name: leggi-video
 description: Legge un video (file locale o link) e lo trasforma in un racconto testuale con voce, scritte a schermo e azioni, senza guardare le immagini. Da usare quando l'utente passa un video o un link a un video da capire (tutorial, registrazione dello schermo, lezione, demo), o chiede cosa succede, cosa viene detto o come si fa qualcosa in un video.
 ---
 
-# Leggi video
+# Leggi video con DemoBrief
 
-Strumento locale: trasforma un video in `racconto.md` (testo compatto, circa 10-20 token al secondo di video) e salva i fotogrammi dei momenti d'azione in una cartella, da aprire solo se serve.
+DemoBrief trasforma un video in `racconto.md` (testo compatto, circa 10-20 token al secondo di video) e salva i fotogrammi dei momenti d'azione in una cartella, da aprire soltanto quando una risposta dipende da un'immagine.
 
 Cartella dello strumento: `{{STRUMENTO}}`
 

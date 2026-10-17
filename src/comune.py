@@ -4,10 +4,18 @@ import os, sys, json, shutil, subprocess
 
 RADICE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+def ambiente(suffisso):
+    """Legge DEMOBRIEF_<suffisso> e ripiega sul nome AD_MOVIOLA_<suffisso>."""
+    nuovo = "DEMOBRIEF_" + suffisso
+    if nuovo in os.environ:
+        return os.environ[nuovo]
+    return os.environ.get("AD_MOVIOLA_" + suffisso)
+
 PREDEFINITI = {
     "ollama": {"indirizzo": "http://127.0.0.1:11434", "modello": "qwen3-vl:8b"},
     "whisper": {"modello": "medium", "dispositivo": "auto"},
     "lingua": "auto",
+    "tetto_fase_minuti": 30,
     "processi_ocr": 3,
     "altezza_massima_download": 720,
     "conserva_lavoro": True,

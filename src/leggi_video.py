@@ -97,9 +97,15 @@ def avvia(script, *args, nome=None, lavoro=None):
     return p, f, nome
 
 
-def attendi(p, lavoro, critico=True):
+def attendi(p, lavoro, critico=True, tetto_minuti=30):
     pr, f, nome = p
-    rc = pr.wait()
+    try:
+        rc = pr.wait(timeout=float(tetto_minuti) * 60)
+    except subprocess.TimeoutExpired:
+        _termina_processo(pr)
+        f.close()
+        log('fase %s ferma da oltre %s minuti: interrotta' % (nome, tetto_minuti))
+        raise SystemExit(4)
     f.close()
     log('%s finito (rc=%d)' % (nome, rc))
     if rc != 0 and critico:
@@ -161,6 +167,7 @@ def main():
         )
         raise SystemExit(2)
     cfg = comune.config()
+    tetto_fase_minuti = cfg.get('tetto_fase_minuti', 30)
     lingua = (a.lingua or cfg.get('lingua', 'auto')).lower()
     if lingua not in ('en', 'it', 'auto'):
         sys.exit('Lingua non valida: usare en, it o auto.')
@@ -204,15 +211,15 @@ def main():
         log(nota)
 
     # Le fasi pesanti restano sequenziali per limitare l'uso contemporaneo di CPU, GPU e memoria.
-    attendi(avvia('movimento.py', video, lavoro, lavoro=lavoro), lavoro)
-    attendi(avvia('trascrivi.py', video, lavoro, lingua, lavoro=lavoro), lavoro)
-    attendi(avvia('ocr.py', 'letture', video, lavoro, nome='ocr_letture', lavoro=lavoro), lavoro)
-    attendi(avvia('ocr.py', 'azione', video, lavoro, nome='ocr_azione', lavoro=lavoro), lavoro)
-    attendi(avvia('ocr.py', 'schermate', video, lavoro, nome='ocr_schermate', lavoro=lavoro), lavoro)
+    attendi(avvia('movimento.py', video, lavoro, lavoro=lavoro), lavoro, tetto_minuti=tetto_fase_minuti)
+    attendi(avvia('trascrivi.py', video, lavoro, lingua, lavoro=lavoro), lavoro, tetto_minuti=tetto_fase_minuti)
+    attendi(avvia('ocr.py', 'letture', video, lavoro, nome='ocr_letture', lavoro=lavoro), lavoro, tetto_minuti=tetto_fase_minuti)
+    attendi(avvia('ocr.py', 'azione', video, lavoro, nome='ocr_azione', lavoro=lavoro), lavoro, tetto_minuti=tetto_fase_minuti)
+    attendi(avvia('ocr.py', 'schermate', video, lavoro, nome='ocr_schermate', lavoro=lavoro), lavoro, tetto_minuti=tetto_fase_minuti)
     for canale in canali:
-        attendi(avvia('canale_%s.py' % canale, video, lavoro, lavoro=lavoro), lavoro, critico=False)
+        attendi(avvia('canale_%s.py' % canale, video, lavoro, lavoro=lavoro), lavoro, critico=False, tetto_minuti=tetto_fase_minuti)
     if occhio:
-        if attendi(avvia('occhio.py', video, lavoro, lavoro=lavoro), lavoro, critico=False) != 0:
+        if attendi(avvia('occhio.py', video, lavoro, lavoro=lavoro), lavoro, critico=False, tetto_minuti=tetto_fase_minuti) != 0:
             nota = 'VISTA assente: l\'occhio (%s) ha dato errore durante l\'analisi.' % cfg['ollama']['modello']
             try:
                 os.remove(os.path.join(lavoro, 'occhio.json'))

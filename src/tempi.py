@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Profilazione leggera a blocchi per AD_Moviola."""
+"""Profilazione leggera a blocchi per DemoBrief."""
 import atexit
 import builtins
 import json
