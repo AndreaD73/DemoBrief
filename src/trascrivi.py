@@ -13,12 +13,12 @@ if sys.platform == 'win32':
             if os.path.isdir(d):
                 os.add_dll_directory(d)
                 os.environ['PATH'] = d + os.pathsep + os.environ['PATH']
-from faster_whisper import WhisperModel
-
 video, out = sys.argv[1], sys.argv[2]
 lingua = (sys.argv[3] if len(sys.argv) > 3 else 'auto').lower()
 cfg = comune.config()['whisper']
 tempi.configura('trascrivi', out, video)
+with tempi.blocco('import_whisper'):
+    from faster_whisper import WhisperModel
 t = time.time()
 wav = os.path.join(out, 'a.wav')
 with tempi.blocco('decodifica_video'):
@@ -46,19 +46,21 @@ PROMPT = {
 prompt = cfg.get('prompt', PROMPT.get(lingua)) or None
 dev = dispositivo()
 try:
-    m = WhisperModel(cfg.get('modello', 'medium'), device=dev, compute_type='float16' if dev == 'cuda' else 'int8')
+    with tempi.blocco('carica_modello'):
+        m = WhisperModel(cfg.get('modello', 'medium'), device=dev, compute_type='float16' if dev == 'cuda' else 'int8')
     with tempi.blocco('trascrizione_whisper'):
         seg, info = m.transcribe(wav, language=None if lingua == 'auto' else lingua, word_timestamps=True, vad_filter=True, beam_size=5, initial_prompt=prompt)
-    W = [[round(w.start, 2), round(w.end, 2), w.word.strip()] for s in seg for w in s.words]
+        W = [[round(w.start, 2), round(w.end, 2), w.word.strip()] for s in seg for w in s.words]
 except Exception as e:                       # GPU presente ma librerie CUDA mancanti: ripiego su CPU
     if dev != 'cuda':
         raise
     print('GPU non utilizzabile (%s): uso la CPU' % str(e)[:120], flush=True)
     dev = 'cpu'
-    m = WhisperModel(cfg.get('modello', 'medium'), device='cpu', compute_type='int8')
+    with tempi.blocco('carica_modello'):
+        m = WhisperModel(cfg.get('modello', 'medium'), device='cpu', compute_type='int8')
     with tempi.blocco('trascrizione_whisper'):
         seg, info = m.transcribe(wav, language=None if lingua == 'auto' else lingua, word_timestamps=True, vad_filter=True, beam_size=5, initial_prompt=prompt)
-    W = [[round(w.start, 2), round(w.end, 2), w.word.strip()] for s in seg for w in s.words]
+        W = [[round(w.start, 2), round(w.end, 2), w.word.strip()] for s in seg for w in s.words]
 json.dump(W, open(os.path.join(out, 'parole.json'), 'w', encoding='utf-8'), ensure_ascii=False)
 json.dump(dict(lingua=info.language, dispositivo=dev), open(os.path.join(out, 'trascrivi_info.json'), 'w'))
 try:

@@ -81,6 +81,42 @@ def ocr(richieste=0, cache=0, rapidocr=0):
     conta('ocr_chiamate_rapidocr', rapidocr)
 
 
+def scarica():
+    """Scrive i blocchi accumulati e li rimuove dalla memoria."""
+    if _fase is None or _lavoro is None:
+        return
+    with _lock:
+        if not _dati:
+            return
+        dati = {
+            nome: {
+                'secondi': valore['secondi'],
+                'cpu_secondi': valore['cpu_secondi'],
+                'chiamate': valore['chiamate'],
+                'fotogrammi': valore['fotogrammi'],
+            }
+            for nome, valore in _dati.items()
+        }
+        _dati.clear()
+    ram = _ram_picco_mb()
+    percorso = os.path.join(_lavoro, 'tempi.jsonl')
+    with _open_originale(percorso, 'a', encoding='utf-8', newline='\n') as file:
+        for nome in sorted(dati):
+            valore = dati[nome]
+            chiamate = valore['chiamate']
+            riga = {
+                'fase': _fase,
+                'blocco': nome,
+                'secondi_totali': round(valore['secondi'], 6),
+                'cpu_secondi': round(valore['cpu_secondi'], 6),
+                'numero_chiamate': chiamate,
+                'secondi_per_chiamata': round(valore['secondi'] / chiamate, 6) if chiamate else 0.0,
+                'ram_picco_mb': ram,
+                'fotogrammi_letti': valore['fotogrammi'],
+            }
+            file.write(json.dumps(riga, ensure_ascii=False, sort_keys=True) + '\n')
+
+
 def _ram_picco_mb():
     if _psutil is not None:
         info = _psutil.Process(os.getpid()).memory_info()

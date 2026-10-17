@@ -16,9 +16,11 @@ PREDEFINITI = {
     "whisper": {"modello": "medium", "dispositivo": "auto"},
     "lingua": "auto",
     "tetto_fase_minuti": 30,
+    "parallelo": True,
     "processi_ocr": 3,
     "altezza_massima_download": 720,
     "conserva_lavoro": True,
+    "decodifica_ffmpeg": True,
 }
 
 

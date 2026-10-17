@@ -114,6 +114,135 @@ def attendi(p, lavoro, critico=True, tetto_minuti=30):
     return rc
 
 
+def memoria_libera_gb():
+    """Restituisce i GB di memoria disponibili, oppure None quando la lettura fallisce."""
+    try:
+        if os.name == 'nt':
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ('dwLength', ctypes.c_ulong),
+                    ('dwMemoryLoad', ctypes.c_ulong),
+                    ('ullTotalPhys', ctypes.c_ulonglong),
+                    ('ullAvailPhys', ctypes.c_ulonglong),
+                    ('ullTotalPageFile', ctypes.c_ulonglong),
+                    ('ullAvailPageFile', ctypes.c_ulonglong),
+                    ('ullTotalVirtual', ctypes.c_ulonglong),
+                    ('ullAvailVirtual', ctypes.c_ulonglong),
+                    ('ullAvailExtendedVirtual', ctypes.c_ulonglong),
+                ]
+
+            stato = MEMORYSTATUSEX()
+            stato.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+            if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stato)):
+                return None
+            byte_liberi = stato.ullAvailPhys
+        elif sys.platform.startswith('linux'):
+            valori = {}
+            with open('/proc/meminfo', encoding='ascii') as f:
+                for riga in f:
+                    nome, valore = riga.split(':', 1)
+                    valori[nome] = int(value := valore.strip().split()[0])
+            byte_liberi = valori['MemAvailable'] * 1024
+        else:
+            byte_liberi = os.sysconf('SC_AVPHYS_PAGES') * os.sysconf('SC_PAGE_SIZE')
+        return byte_liberi / float(1024 ** 3)
+    except (AttributeError, KeyError, OSError, TypeError, ValueError):
+        return None
+
+
+def usa_fasi_parallele(cfg):
+    if not cfg.get('parallelo', True):
+        return False
+    gb = memoria_libera_gb()
+    if gb is not None and gb < 6.0:
+        log('memoria libera %.1f GB: fasi in sequenza' % gb)
+        return False
+    return True
+
+
+def _fallimento_fase(fase, lavoro, rc):
+    coda = open(
+        os.path.join(lavoro, fase + '.log'),
+        encoding='utf-8',
+        errors='replace',
+    ).read()[-600:]
+    raise SystemExit(
+        'Passo "%s" fallito (vedi %s.log):\n%s'
+        % (fase, fase, coda)
+    )
+
+
+def esegui_fasi_parallele(video, lavoro, lingua, tetto_minuti):
+    """Esegue le fasi indipendenti e rispetta le dipendenze di ocr_azione."""
+    attive = {}
+    completate = set()
+    azione_avviata = False
+    specifiche = (
+        ('movimento', ('movimento.py', video, lavoro)),
+        ('trascrivi', ('trascrivi.py', video, lavoro, lingua)),
+        ('ocr_letture', ('ocr.py', 'letture', video, lavoro)),
+        ('ocr_schermate', ('ocr.py', 'schermate', video, lavoro)),
+    )
+
+    for nome, argomenti in specifiche:
+        attive[nome] = (
+            avvia(*argomenti, nome=nome, lavoro=lavoro),
+            time.monotonic(),
+        )
+
+    while attive:
+        adesso = time.monotonic()
+        for nome in tuple(attive):
+            processo, avviata_il = attive[nome]
+            pr, registro, fase = processo
+            rc = pr.poll()
+            if rc is not None:
+                registro.close()
+                log('%s finito (rc=%d)' % (fase, rc))
+                del attive[nome]
+                completate.add(nome)
+                if rc != 0:
+                    for (_, registro_attivo, _), _ in attive.values():
+                        registro_attivo.close()
+                    _ferma_figli()
+                    _fallimento_fase(fase, lavoro, rc)
+                continue
+            if adesso - avviata_il >= float(tetto_minuti) * 60:
+                _termina_processo(pr)
+                registro.close()
+                del attive[nome]
+                log(
+                    'fase %s ferma da oltre %s minuti: interrotta'
+                    % (fase, tetto_minuti)
+                )
+                for _, registro_attivo, _ in attive.values():
+                    registro_attivo.close()
+                _ferma_figli()
+                raise SystemExit(4)
+
+        if (
+            not azione_avviata
+            and {'movimento', 'ocr_letture'} <= completate
+        ):
+            attive['ocr_azione'] = (
+                avvia(
+                    'ocr.py',
+                    'azione',
+                    video,
+                    lavoro,
+                    nome='ocr_azione',
+                    lavoro=lavoro,
+                ),
+                time.monotonic(),
+            )
+            azione_avviata = True
+
+        if attive:
+            time.sleep(0.02)
+
+
 def fotogrammi(video, uscita, lavoro):
     """Un png per ogni fase d'azione (fine fase; + meta' per le fasi lunghe) e indice orario->png."""
     mv = json.load(open(os.path.join(lavoro, 'mov.json'), encoding='utf-8'))
@@ -210,12 +339,60 @@ def main():
     if nota:
         log(nota)
 
-    # Le fasi pesanti restano sequenziali per limitare l'uso contemporaneo di CPU, GPU e memoria.
-    attendi(avvia('movimento.py', video, lavoro, lavoro=lavoro), lavoro, tetto_minuti=tetto_fase_minuti)
-    attendi(avvia('trascrivi.py', video, lavoro, lingua, lavoro=lavoro), lavoro, tetto_minuti=tetto_fase_minuti)
-    attendi(avvia('ocr.py', 'letture', video, lavoro, nome='ocr_letture', lavoro=lavoro), lavoro, tetto_minuti=tetto_fase_minuti)
-    attendi(avvia('ocr.py', 'azione', video, lavoro, nome='ocr_azione', lavoro=lavoro), lavoro, tetto_minuti=tetto_fase_minuti)
-    attendi(avvia('ocr.py', 'schermate', video, lavoro, nome='ocr_schermate', lavoro=lavoro), lavoro, tetto_minuti=tetto_fase_minuti)
+    if usa_fasi_parallele(cfg):
+        esegui_fasi_parallele(
+            video,
+            lavoro,
+            lingua,
+            tetto_fase_minuti,
+        )
+    else:
+        attendi(
+            avvia('movimento.py', video, lavoro, lavoro=lavoro),
+            lavoro,
+            tetto_minuti=tetto_fase_minuti,
+        )
+        attendi(
+            avvia('trascrivi.py', video, lavoro, lingua, lavoro=lavoro),
+            lavoro,
+            tetto_minuti=tetto_fase_minuti,
+        )
+        attendi(
+            avvia(
+                'ocr.py',
+                'letture',
+                video,
+                lavoro,
+                nome='ocr_letture',
+                lavoro=lavoro,
+            ),
+            lavoro,
+            tetto_minuti=tetto_fase_minuti,
+        )
+        attendi(
+            avvia(
+                'ocr.py',
+                'azione',
+                video,
+                lavoro,
+                nome='ocr_azione',
+                lavoro=lavoro,
+            ),
+            lavoro,
+            tetto_minuti=tetto_fase_minuti,
+        )
+        attendi(
+            avvia(
+                'ocr.py',
+                'schermate',
+                video,
+                lavoro,
+                nome='ocr_schermate',
+                lavoro=lavoro,
+            ),
+            lavoro,
+            tetto_minuti=tetto_fase_minuti,
+        )
     for canale in canali:
         attendi(avvia('canale_%s.py' % canale, video, lavoro, lavoro=lavoro), lavoro, critico=False, tetto_minuti=tetto_fase_minuti)
     if occhio:

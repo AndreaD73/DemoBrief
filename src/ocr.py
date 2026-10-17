@@ -119,7 +119,27 @@ def t_box(img):
 
 def tdisp(a):
     k, img = a
-    return k, {'det': t_det, 'line': t_line, 'full': t_full, 'box': t_box}[k.split(':')[0]](img)
+    try:
+        risultato = {'det': t_det, 'line': t_line, 'full': t_full, 'box': t_box}[k.split(':')[0]](img)
+        return k, risultato
+    finally:
+        tempi.scarica()
+
+
+def chiudi_pool(pool, attesa=20.0, intervallo=0.2):
+    """Chiude il pool senza attendere indefinitamente worker bloccati."""
+    pool.close()
+    scadenza = time.monotonic() + attesa
+    while any(processo.is_alive() for processo in pool._pool):
+        restante = scadenza - time.monotonic()
+        if restante <= 0:
+            pool.terminate()
+            print('pool terminato dopo 20 s', flush=True)
+            break
+        time.sleep(min(intervallo, restante))
+    else:
+        print('pool chiuso', flush=True)
+    pool.join()
 
 
 def dims(video):
@@ -300,7 +320,7 @@ def ricomponi_fasce(riferimenti, risultati):
     return righe
 
 
-def scoperta(video, H, pool, stat):
+def _scoperta_lenta(video, H, pool, stat):
     imgs = []
     for n, im in frames(video, '1/2', H):
         imgs.append(im)
@@ -328,7 +348,6 @@ def scoperta(video, H, pool, stat):
         dif = max(float((np.abs(cs[k] - cs[k - 1]) > 40).mean()) for k in range(1, len(cs)))
         if dif >= 0.02:
             zone.append((b, len(w['obs'])))
-    # fusione: zone quasi coincidenti e zone sulla stessa riga (etichetta + valore, gap orizzontale <= 14 px)
     bs = [b for b, n in sorted(zone, key=lambda x: -x[1])]
     fuso = True
     while fuso:
@@ -344,7 +363,99 @@ def scoperta(video, H, pool, stat):
             if fuso:
                 break
     out = sorted(bs, key=lambda z: (z[1], z[0]))
-    stat['widgets'] = len(widgets); stat['zone'] = len(out)
+    stat['widgets'] = len(widgets)
+    stat['zone'] = len(out)
+    return out
+
+
+def scoperta(video, H, pool, stat):
+    imgs = []
+    for n, im in frames(video, '1/2', H):
+        imgs.append(im)
+    res = esegui_ocr(pool, [('det:%d' % i, im) for i, im in enumerate(imgs)], comune.ambiente('TEMPI_LAVORO'), chunksize=2)
+    stat['det'] = len(imgs)
+    widgets = []
+    capacita = 16
+    box_widget = np.empty((capacita, 4), dtype=np.float64)
+    with tempi.blocco('scoperta_widget'):
+        for i in range(len(imgs)):
+            for b_originale in res['det:%d' % i]:
+                if (b_originale[2] - b_originale[0]) < 6 or (b_originale[3] - b_originale[1]) < 6:
+                    continue
+                b = np.asarray(b_originale, dtype=np.float64)
+                if widgets:
+                    attivi = box_widget[:len(widgets)]
+                    x0 = np.maximum(attivi[:, 0], b[0])
+                    y0 = np.maximum(attivi[:, 1], b[1])
+                    x1 = np.minimum(attivi[:, 2], b[2])
+                    y1 = np.minimum(attivi[:, 3], b[3])
+                    intersezione = np.maximum(0.0, x1 - x0) * np.maximum(0.0, y1 - y0)
+                    unione = ((attivi[:, 2] - attivi[:, 0]) * (attivi[:, 3] - attivi[:, 1])
+                              + (b[2] - b[0]) * (b[3] - b[1]) - intersezione)
+                    valori_iou = np.divide(intersezione, unione, out=np.zeros_like(intersezione), where=unione > 0)
+                    indice_best = int(np.argmax(valori_iou))
+                    valore_best = float(valori_iou[indice_best])
+                else:
+                    indice_best = -1
+                    valore_best = 0.0
+                if indice_best >= 0 and valore_best > 0.5:
+                    best = widgets[indice_best]
+                    best['obs'].append(i)
+                    best['box'] = [min(best['box'][0], b_originale[0]), min(best['box'][1], b_originale[1]), max(best['box'][2], b_originale[2]), max(best['box'][3], b_originale[3])]
+                    box_widget[indice_best] = best['box']
+                else:
+                    if len(widgets) == capacita:
+                        nuova_capacita = capacita * 2
+                        nuovi_box = np.empty((nuova_capacita, 4), dtype=np.float64)
+                        nuovi_box[:capacita] = box_widget
+                        box_widget = nuovi_box
+                        capacita = nuova_capacita
+                    widgets.append(dict(box=list(b_originale), obs=[i]))
+                    box_widget[len(widgets) - 1] = b
+    zone = []
+    for w in widgets:
+        if len(w['obs']) < 2:
+            continue
+        b = [int(max(0, w['box'][0] - 3)), int(max(0, w['box'][1] - 3)), int(min(W, w['box'][2] + 3)), int(min(H, w['box'][3] + 3))]
+        if b[2] - b[0] > 0.6 * W or b[3] - b[1] > 60:
+            continue
+        cs = [cv2.cvtColor(crop(imgs[i], b), cv2.COLOR_BGR2GRAY).astype(np.int16) for i in w['obs']]
+        dif = max(float((np.abs(cs[k] - cs[k - 1]) > 40).mean()) for k in range(1, len(cs)))
+        if dif >= 0.02:
+            zone.append((b, len(w['obs'])))
+    bs = [b for b, n in sorted(zone, key=lambda x: -x[1])]
+    with tempi.blocco('scoperta_fusione'):
+        fuso = True
+        while fuso:
+            fuso = False
+            n = len(bs)
+            if n < 2:
+                break
+            matrice = np.asarray(bs, dtype=np.float64)
+            x0 = np.maximum(matrice[:, None, 0], matrice[None, :, 0])
+            y0 = np.maximum(matrice[:, None, 1], matrice[None, :, 1])
+            x1 = np.minimum(matrice[:, None, 2], matrice[None, :, 2])
+            y1 = np.minimum(matrice[:, None, 3], matrice[None, :, 3])
+            intersezione = np.maximum(0.0, x1 - x0) * np.maximum(0.0, y1 - y0)
+            aree = (matrice[:, 2] - matrice[:, 0]) * (matrice[:, 3] - matrice[:, 1])
+            unione_iou = aree[:, None] + aree[None, :] - intersezione
+            valori_iou = np.divide(intersezione, unione_iou, out=np.zeros_like(intersezione), where=unione_iou > 0)
+            altezze = matrice[:, 3] - matrice[:, 1]
+            sovrapposizione_y = np.minimum(matrice[:, None, 3], matrice[None, :, 3]) - np.maximum(matrice[:, None, 1], matrice[None, :, 1])
+            stessa_riga = ((sovrapposizione_y >= 0.5 * np.minimum(altezze[:, None], altezze[None, :])) & (matrice[:, None, 0] <= matrice[None, :, 2] + 14) & (matrice[None, :, 0] <= matrice[:, None, 2] + 14))
+            unione_x0 = np.minimum(matrice[:, None, 0], matrice[None, :, 0])
+            unione_x1 = np.maximum(matrice[:, None, 2], matrice[None, :, 2])
+            condizione = ((valori_iou > 0.4) | stessa_riga) & ((unione_x1 - unione_x0) <= 0.5 * W)
+            coppie = np.argwhere(np.triu(condizione, k=1))
+            if len(coppie):
+                i, j = (int(coppie[0, 0]), int(coppie[0, 1]))
+                a, b = bs[i], bs[j]
+                bs[i] = [min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3])]
+                del bs[j]
+                fuso = True
+    out = sorted(bs, key=lambda z: (z[1], z[0]))
+    stat['widgets'] = len(widgets)
+    stat['zone'] = len(out)
     return out
 
 
@@ -363,6 +474,7 @@ def letture(video, out):
                     tasks.append(('line:%d:%d' % (n, zi), prev[zi]))
         res = esegui_ocr(pool, tasks, out, chunksize=8)
         stat['rec'] = len(tasks)
+        chiudi_pool(pool)
     ev = {}
     for k, v in res.items():
         _, n, zi = k.split(':')
@@ -411,6 +523,7 @@ def azione(video, out):
                     tasks.append(('full:%d:%d:%d' % (n, x0, y0), im[y0:y0 + 150, x0:x0 + 300].copy()))
             prevframe = im
         res = esegui_ocr(pool, tasks, out, chunksize=4)
+        chiudi_pool(pool)
     stato = {}; fin = []
     for k, v in res.items():
         a = k.split(':')
@@ -513,6 +626,7 @@ def schermate(video, out):
             chunksize=1,
             richieste_aggiuntive=riusi,
         )
+        chiudi_pool(pool)
 
     letture = []
     for n, b, riferimenti in eventi:

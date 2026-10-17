@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """movimento2.py <video> [outdir] -> eventi.txt (v2: cursore a template, fasi compatte)
 Solo calcolo (opencv+numpy). Nessun modello."""
-import sys, os, time, cv2, numpy as np
+import sys, os, time, subprocess, cv2, numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import comune
 import tempi
 FPS = 10
 W = 640
@@ -36,11 +37,32 @@ def tf1(t):
     return "%02d:%04.1f" % (int(t // 60), t % 60)
 
 
-def load(video):
+def _parametri_video(video):
     cap = cv2.VideoCapture(video)
     fps = cap.get(cv2.CAP_PROP_FPS)
+    numero = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    larghezza = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    altezza = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
     step = max(1, round(fps / FPS))
-    color, gray = [], []
+    attesi = (numero + step - 1) // step
+    return fps, step, attesi, larghezza, altezza
+
+
+def _riduci(fotogramma):
+    h = int(fotogramma.shape[0] * W / fotogramma.shape[1])
+    colore = cv2.resize(fotogramma, (W, h), interpolation=cv2.INTER_AREA)
+    grigio = cv2.cvtColor(colore, cv2.COLOR_BGR2GRAY)
+    return colore, grigio
+
+
+def _load_cv2(video, step=None, fps=None, motivo=None):
+    cap = cv2.VideoCapture(video)
+    if fps is None:
+        fps = cap.get(cv2.CAP_PROP_FPS)
+    if step is None:
+        step = max(1, round(fps / FPS))
+    primo_colore, gray = None, []
     i = 0
     while True:
         if not cap.grab():
@@ -49,12 +71,82 @@ def load(video):
             ok, f = cap.retrieve()
             if not ok:
                 break
-            h = int(f.shape[0] * W / f.shape[1])
-            f = cv2.resize(f, (W, h), interpolation=cv2.INTER_AREA)
-            color.append(f)
-            gray.append(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY))
+            colore, grigio = _riduci(f)
+            if primo_colore is None:
+                primo_colore = colore
+            gray.append(grigio)
         i += 1
+    cap.release()
+    if motivo is not None:
+        print("decodifica cv2 (%s)" % motivo, flush=True)
+    color = [] if primo_colore is None else [primo_colore]
     return color, gray, step / fps
+
+
+def _load_ffmpeg(video, step, fps, attesi, larghezza, altezza):
+    filtro = "select=not(mod(n\\,%d)),scale=in_color_matrix=bt601:out_color_matrix=bt601" % step
+    comando = [
+        comune.ffmpeg(), "-v", "error", "-i", video,
+        "-vf", filtro, "-fps_mode", "passthrough",
+        "-f", "rawvideo", "-pix_fmt", "bgr24", "-"
+    ]
+    processo = subprocess.Popen(
+        comando,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+    )
+    dimensione = larghezza * altezza * 3
+    primo_colore, gray = None, []
+    try:
+        while True:
+            blocco = processo.stdout.read(dimensione)
+            if not blocco:
+                break
+            if len(blocco) != dimensione:
+                raise RuntimeError(
+                    "fotogramma incompleto: %d byte invece di %d"
+                    % (len(blocco), dimensione)
+                )
+            f = np.frombuffer(blocco, dtype=np.uint8).reshape(
+                altezza, larghezza, 3
+            )
+            colore, grigio = _riduci(f)
+            if primo_colore is None:
+                primo_colore = colore
+            gray.append(grigio)
+        errore = processo.stderr.read().decode("utf-8", errors="replace").strip()
+        codice = processo.wait()
+    except BaseException:
+        processo.kill()
+        processo.wait()
+        raise
+    if codice != 0:
+        raise RuntimeError(
+            "ffmpeg terminato con codice %d%s"
+            % (codice, ": " + errore if errore else "")
+        )
+    if len(gray) != attesi:
+        raise RuntimeError(
+            "ricevuti %d fotogrammi invece di %d" % (len(gray), attesi)
+        )
+    print("decodifica ffmpeg", flush=True)
+    color = [] if primo_colore is None else [primo_colore]
+    return color, gray, step / fps
+
+
+def load(video):
+    fps, step, attesi, larghezza, altezza = _parametri_video(video)
+    if not comune.config().get("decodifica_ffmpeg", True):
+        return _load_cv2(
+            video, step, fps, "disattivata da configurazione"
+        )
+    try:
+        return _load_ffmpeg(
+            video, step, fps, attesi, larghezza, altezza
+        )
+    except (Exception, SystemExit) as errore:
+        return _load_cv2(video, step, fps, str(errore))
 
 
 # ---------- cursore: template matching ----------
@@ -69,7 +161,8 @@ def derive_template(gray):
         d = (cv2.absdiff(gray[k], gray[k - 1]) > 18).astype(np.uint8)
         if d.sum() < 5 or d.mean() * 100 > 0.4:
             continue
-        n, lab, st, cen = cv2.connectedComponentsWithStats(cv2.dilate(d, np.ones((3, 3), np.uint8)))
+        with tempi.blocco('componenti'):
+            n, lab, st, cen = cv2.connectedComponentsWithStats(cv2.dilate(d, np.ones((3, 3), np.uint8)))
         for j in range(1, n):
             x, y, w, h, a = st[j]
             if 6 <= w <= 14 and 8 <= h <= 18 and x > 1 and y > 1:
@@ -94,7 +187,8 @@ def derive_template(gray):
             reg = bin_white(gray[k2][max(0, y2 - 20):y2 + h2 + 20, max(0, x2 - 20):x2 + w2 + 20])
             if reg.shape[0] < t.shape[0] or reg.shape[1] < t.shape[1]:
                 continue
-            r = cv2.matchTemplate(reg, t, cv2.TM_CCOEFF_NORMED)
+            with tempi.blocco('cursore_template'):
+                r = cv2.matchTemplate(reg, t, cv2.TM_CCOEFF_NORMED)
             if r.max() > 0.75:
                 sc += 1
         if sc > bs:
@@ -107,7 +201,8 @@ def track_cursor(gray, tpl, thr=0.72):
     sono icone statiche dell'interfaccia (play, ecc.) e si scartano."""
     peaks = []
     for g in gray:
-        r = cv2.matchTemplate(bin_white(g), tpl, cv2.TM_CCOEFF_NORMED)
+        with tempi.blocco('cursore_template'):
+            r = cv2.matchTemplate(bin_white(g), tpl, cv2.TM_CCOEFF_NORMED)
         pk = []
         for _ in range(5):
             _, mx, _, loc = cv2.minMaxLoc(r)
@@ -132,7 +227,8 @@ def track_cursor(gray, tpl, thr=0.72):
 
 # ---------- flusso ottico ----------
 def flow_stats(a, b):
-    fl = cv2.calcOpticalFlowFarneback(a, b, None, .5, 2, 13, 2, 5, 1.1, 0)
+    with tempi.blocco('flusso_ottico'):
+        fl = cv2.calcOpticalFlowFarneback(a, b, None, .5, 2, 13, 2, 5, 1.1, 0)
     mag = np.linalg.norm(fl, axis=2)
     mv = mag > 0.3
     hh, ww = mag.shape
@@ -182,7 +278,8 @@ def analizza(video):
         energy = float(d.mean())
         zone, comp, cpx = None, None, 0
         if m.sum() > 12:
-            nc, lab, st, cen = cv2.connectedComponentsWithStats(cv2.dilate(m, K7))
+            with tempi.blocco('componenti'):
+                nc, lab, st, cen = cv2.connectedComponentsWithStats(cv2.dilate(m, K7))
             if nc > 1:
                 cnt = np.bincount(lab[m > 0], minlength=nc)
                 cnt[0] = 0
