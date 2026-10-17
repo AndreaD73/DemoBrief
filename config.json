@@ -1,0 +1,21 @@
+{
+  "ollama": {
+    "indirizzo": "http://127.0.0.1:11434",
+    "modello": "qwen3-vl:8b",
+    "modello_risultato": "qwen3-vl:8b"
+  },
+  "whisper": {
+    "modello": "medium",
+    "dispositivo": "auto"
+  },
+  "lingua": "auto",
+  "processi_ocr": 3,
+  "ocr_gpu": true,
+  "processi_ocr_gpu": 2,
+  "altezza_massima_download": 720,
+  "conserva_lavoro": true,
+  "sezioni_spente": [
+    "TESTO"
+  ],
+  "occhio": false
+}

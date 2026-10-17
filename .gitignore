@@ -1,0 +1,17 @@
+venv/
+.venv/
+cache/
+__pycache__/
+*.pyc
+.pytest_cache/
+output/
+*-letto/
+video-letto/
+*.mp4
+*.mkv
+*.webm
+*.mov
+*.avi
+test/_tmp/
+*.wav
+_lavoro/
