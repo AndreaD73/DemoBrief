@@ -2,7 +2,7 @@
 
 # Leggi video con DemoBrief
 
-DemoBrief trasforma un video in `racconto.md` (testo compatto, circa 10-20 token al secondo di video) e salva i fotogrammi dei momenti d'azione in una cartella, da aprire soltanto quando una risposta dipende da un'immagine.
+DemoBrief trasforma un video in `racconto.md` (testo compatto, circa 10-20 token al secondo di video) e salva i fotogrammi dei momenti d'azione in una cartella con il suo indice.
 
 Cartella dello strumento: `{{STRUMENTO}}`
 
@@ -24,8 +24,8 @@ Cartella dello strumento: `{{STRUMENTO}}`
    - Il tempo di elaborazione e' circa 1,5 volte la durata del video: per video lunghi lancia il comando in background e attendi la fine.
    - Se risponde che lo strumento non e' installato, esegui prima `{{STRUMENTO}}\installa.ps1`.
 2. Leggi `<uscita>\racconto.md`. Le prime 3 righe dicono durata, token, fonti usate e legenda dei campi. Ogni riga e' un istante: `[mm:ss] VOCE "..." | TESTO ... | MOTO ... | VISTA ...`.
-3. Rispondi all'utente usando solo il racconto. Se la riga di intestazione segnala che la VISTA e' assente, dillo: significa solo che mancano le righe con la forma della geometria, il resto e' completo.
-4. Apri un'immagine solo se una riga e' ambigua e la risposta dipende davvero da quello che si vede: cerca l'orario in `<uscita>\fotogrammi\indice.md`, apri il png indicato e basta. Mai aprire tutti i fotogrammi, mai aprirli "per sicurezza".
+3. Leggi `<uscita>\fotogrammi\indice.md` e apri **al massimo 32 fotogrammi**, scegliendo quelli che chiariscono di piu' (valori, finestre di dialogo, risultati visibili); se sono meno di 32, aprili tutti. Misurato sul banco di prova: rispetto al solo testo la resa sale di 10-16 punti, a circa 0,66 $ e 90 secondi per video; oltre 32 non migliora piu'.
+4. Rispondi all'utente unendo racconto e immagini. Se la riga di intestazione segnala che la VISTA e' assente, dillo: significa solo che mancano le righe con la forma della geometria, il resto e' completo.
 
 ## Attenzioni
 

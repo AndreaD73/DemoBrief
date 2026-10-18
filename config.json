@@ -16,7 +16,10 @@
   "altezza_massima_download": 720,
   "conserva_lavoro": true,
   "sezioni_spente": [
-    "TESTO"
+    "TESTO",
+    "VALORI",
+    "DOVE"
   ],
-  "occhio": false
+  "occhio": false,
+  "tabelle": "F"
 }

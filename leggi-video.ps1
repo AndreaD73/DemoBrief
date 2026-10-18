@@ -16,7 +16,12 @@ $env:PYTHONIOENCODING = 'utf-8'
 $argomenti = @((Join-Path $PSScriptRoot 'src\leggi_video.py'), $Video)
 if ($Lingua) { $argomenti += @('--lingua', $Lingua) }
 if ($Canali) { $argomenti += @('--canali', $Canali) }
-if ($Uscita) { $argomenti += @('--uscita', $Uscita) }
+if ($Uscita) {
+    # A trailing backslash would escape the closing quote of the argument (Windows PowerShell 5.1).
+    $UscitaPulita = $Uscita.TrimEnd('\')
+    if ($UscitaPulita.EndsWith(':')) { $UscitaPulita += '\.' }
+    $argomenti += @('--uscita', $UscitaPulita)
+}
 if ($SenzaOcchio) { $argomenti += '--senza-occhio' }
 & $py @argomenti
 exit $LASTEXITCODE

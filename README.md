@@ -1,3 +1,5 @@
+Italiano: [README.it.md](README.it.md)
+
 # DemoBrief
 
 Turn screen-recorded software demos and tutorials into an illustrated Markdown brief for AI agents.
@@ -35,9 +37,11 @@ The agent reads a few thousand tokens instead of watching the original video.
 - `<output>/fotogrammi/indice.md`: timestamp-to-image index.
 - `<output>/_lavoro/`: intermediate files and logs. This directory is removed when `conserva_lavoro` is `false`.
 
-Without `--uscita` on Linux/macOS or `-Uscita` on Windows, the output is written next to the input video in a directory named `<video-name>-letto`.
+Without `--uscita` on Linux/macOS or `-Uscita` on Windows, the output is written next to the input video in a directory named `<video-name>-letto`. For a URL, the default is a directory named `video-letto` in the current working directory.
 
 `VOCE` is speech, `TESTO` is OCR text, `SCHERMO` is a stable screen change, `MOTO` is an action or view movement, and `VISTA` is the optional Ollama observation. The optional Ollama eye and the `VISTA` field are tuned for tutorials recorded in 3D graphics applications.
+
+The Ollama eye is off by default (`"occhio": false` in `config.json`), so a default run produces no `VISTA` lines even when Ollama and the model are installed. Set `"occhio": true` to enable it. When `VISTA` is missing, for any reason, the second line of `racconto.md` says so ("VISTA assente: ..."); the legend on the third line always lists `VISTA`.
 
 `TESTO` is disabled by default through `config.json`, in `sezioni_spente`. Remove `"TESTO"` from that list to enable OCR text in `racconto.md`.
 
@@ -48,7 +52,7 @@ Without `--uscita` on Linux/macOS or `-Uscita` on Windows, the output is written
 - yt-dlp, installed from `requirements.txt`, used only for video links.
 - Optional NVIDIA GPU on Windows or Linux.
 - OCR runs on CPU by default. GPU OCR is experimental: install `onnxruntime-gpu==1.31.0` in place of `onnxruntime`; it is used automatically when CUDA works.
-- Optional Ollama for `VISTA` lines.
+- Optional Ollama for `VISTA` lines (also requires `"occhio": true` in `config.json`).
 - On Linux: `sudo apt install ffmpeg python3-venv`.
 
 ## Installation
@@ -95,7 +99,11 @@ Linux and macOS:
 ./leggi-video.sh <video-or-URL> [--uscita DIR] [--lingua en|it|auto] [--senza-occhio] [--canali name1,name2]
 ```
 
-A URL is downloaded at a maximum height of 720 pixels.
+A URL is downloaded at a maximum height of 720 pixels (`altezza_massima_download`). Live streams are refused, files over 4 GB are refused, and the download has timeouts (60 seconds for the title, 2 hours for the video).
+
+`-SenzaOcchio` / `--senza-occhio` switches the eye off for the run. It does not affect the experimental `risultato` channel, which queries Ollama anyway.
+
+Analysis steps (movement, transcription, OCR) run concurrently by default when at least 6 GB of memory is free; otherwise, or with `"parallelo": false`, they run one after another. A step that runs longer than `tetto_fase_minuti` is stopped and the program exits with code 4.
 
 ## Experimental channels
 
@@ -128,23 +136,37 @@ Linux/macOS example:
 - `whisper.modello`: faster-whisper model.
 - `whisper.dispositivo`: `auto`, `cuda` or `cpu`.
 - `lingua`: `auto`, `en` or `it`.
-- `processi_ocr`: number of OCR workers.
-- `ocr_gpu`: enables OCR GPU support.
-- `processi_ocr_gpu`: number of GPU OCR workers.
+- `whisper.prompt`: optional text that replaces the built-in transcription prompt.
+- `tetto_fase_minuti`: per-step time cap in minutes (default 30); a step over the cap is stopped and the program exits with code 4.
+- `parallelo`: runs independent steps concurrently (default `true`; also off when less than 6 GB of memory is free).
+- `decodifica_ffmpeg`: decodes the movement frames through ffmpeg (default `true`; `false` uses OpenCV).
+- `processi_ocr`: number of OCR workers (CPU; capped at 3).
+- `ocr_gpu`: enables OCR GPU support (used only when CUDA works).
+- `processi_ocr_gpu`: number of GPU OCR workers (capped at 2).
 - `altezza_massima_download`: maximum downloaded video height.
 - `conserva_lavoro`: keeps intermediate files and logs.
-- `sezioni_spente`: disabled output sections.
-- `occhio`: enables Ollama visual observations.
+- `sezioni_spente`: disabled output sections (shipped value: `TESTO`, `VALORI`, `DOVE`).
+- `occhio`: enables Ollama visual observations (shipped value: `false`, off).
+- `tabelle`: letters selecting the table features: `S` (tables read from `SCHERMO`), `F` (whole-sentence preservation, the shipped value) and `I` (table frames). Use only these letters; any other letter is ignored.
 
 ## Example output
 
 ```text
 [00:03] VOCE "Open the generic editor and create a new document."
-[00:11] SCHERMO new empty document in the main editor window
-[00:18] VOCE "Select the heading and apply the title style."
-[00:27] MOTO click on the alignment control
-[00:35] SCHERMO the formatted tutorial page is visible
+[00:11] VOCE "Select the heading and apply the title style." | SCHERMO 00:12 finestra al centro: Style / Title / Heading 1 | MOTO 00:14 clic1
+[00:21] VOCE "Then rotate the view to check the result." | MOTO 00:22-00:27 orbita 5s
+[00:30] VOCE "The formatted page is now ready." | MOTO 00:31 clic2 | SCHERMO 00:33 pagina: Tutorial / Introduction
+[00:41] MOTO 00:41 mesh 2g
 ```
+
+The area names in `SCHERMO` (for example `pagina`, `finestra al centro`, `pannello dx`) are in Italian.
+
+## For AI agents reading the output
+
+1. Read `racconto.md` and `fotogrammi/indice.md`.
+2. Open at most 32 frames from `fotogrammi/`, choosing those that clarify the most (values, dialogs, visible results). If there are fewer than 32, open them all.
+
+Measured on the test bench (14 tutorials, blind scoring), compared with the text alone: +10-16 points, at about 0.66 USD and 90 seconds per video with Claude Opus. Beyond 32 there is no gain: 64 images gave the same result. This matches the bundled skill (`skill/SKILL.md`).
 
 ## Running the tests
 

@@ -76,7 +76,7 @@ if [ "$SENZA_MODELLI" -eq 0 ]; then
     export PYTHONUTF8=1
     export TIKTOKEN_CACHE_DIR="$QUI/cache"
     "$PY" -I -c "import sys;sys.path.insert(0,sys.argv[1]);import comune;from faster_whisper import download_model;download_model(comune.config()['whisper']['modello'])" "$QUI/src" ||
-        printf '%s\n' "Modello whisper non scaricato: sarÃ  scaricato al primo uso." >&2
+        printf '%s\n' "Modello whisper non scaricato: sarà scaricato al primo uso." >&2
     "$PY" -I -c "import tiktoken;tiktoken.get_encoding('cl100k_base')" ||
         printf '%s\n' "Vocabolario token non scaricato: i token saranno stimati a caratteri/4." >&2
 fi
@@ -84,7 +84,7 @@ fi
 passo "Controllo Ollama"
 INDIRIZZO="$("$PY" -c "import json,sys;print(json.load(open(sys.argv[1], encoding='utf-8-sig'))['ollama']['indirizzo'].rstrip('/'))" "$QUI/config.json")"
 if ! curl -s --max-time 5 "$INDIRIZZO/api/tags" >/dev/null; then
-    printf '%s\n' "Ollama non risponde: il racconto uscirÃ  senza righe VISTA." >&2
+    printf '%s\n' "Ollama non risponde: il racconto uscirà senza righe VISTA." >&2
 fi
 
 if [ "$INSTALLA_SKILL" -eq 1 ]; then

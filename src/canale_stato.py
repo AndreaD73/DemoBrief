@@ -1,14 +1,15 @@
 # -*- coding: utf-8 -*-
-"""Canale E: stato dell'interfaccia (voce scelta, controllo acceso o spento).
+"""Channel E: interface state (a chosen item, a control switched on or off).
 
-Nessuna parola, posizione o soglia legata a un programma o a un video: il canale guarda solo
-come cambia lo schermo.
- - E1 scelto: in una lettura di schermo fermo (ocr3), fra voci allineate una sola ha il fondo diverso.
- - E2 acceso/spento: a 2 fps ogni cambio COMPATTO e PERSISTENTE dello schermo (non la vista 3D, non
-   il cursore, non un tooltip, non un numero che cambia) e' un innesco; il nome del controllo lo
-   da' una lettura OCR del ritaglio nell'istante dopo il cambio; il verso (acceso/spento) lo da' il
-   confronto prima/dopo (colore piu' vivo o testo piu' contrastato = acceso).
- - Due cambi opposti fra voci allineate (una si accende, l'altra si spegne) = una SCELTA.
+Reads the video plus the work folder (ocr3.json, parole.json, eventi_cursore.json, cursore.json, mov.json)
+and writes eventi_stato.json (and stato_diario.json when the diary is enabled). No word, position or
+threshold is tied to one program or video: the channel only looks at how the screen changes.
+ - E1 chosen: in a still-screen reading (ocr3), among aligned items exactly one has a different background.
+ - E2 on/off: at 2 fps every COMPACT and PERSISTENT change of the screen (not the 3D view, not the
+   cursor, not a tooltip, not a changing number) is a trigger; the name of the control comes from an OCR
+   reading of the crop right after the change; the direction (on/off) comes from the before/after
+   comparison (more vivid colour or higher-contrast text = on).
+ - Two opposite changes among aligned items (one turns on, the other turns off) = a CHOICE.
 """
 import collections
 import json
@@ -21,7 +22,8 @@ import time
 import cv2
 import numpy as np
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # con python -I la cartella dello script non e' nel percorso
+# With python -I the script folder is not on the path.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import eventi
 import comune
 from testi import pulisci_ocr, ratio, dig, let
@@ -30,22 +32,38 @@ VERSIONE = "0.3"
 FORMATI = {"scelto": "scelto {ogg} ({dove})", "cambio": "{stato} {ogg}"}
 LEGENDA = "STATO = voce scelta o controllo acceso/spento nell'interfaccia"
 
-LARGHEZZA = 1280          # i riquadri di ocr3 e le soglie di pixel sono in questa scala
-FPS = 2                   # un fotogramma ogni 0,5 s
-SOGLIA_PIXEL = 60         # somma delle differenze BGR oltre la quale un pixel e' "cambiato"
-ORIZZONTE = 9             # fotogrammi guardati in avanti: +3 (1,5 s) conferma, +9 (4,5 s) conferma la tenuta
-MAX_PER_MINUTO = 6        # tetto del canale: oltre e' rumore
-SOLO_CON_VOCE = True      # limita l'uscita agli eventi vicini alla voce, evitando eventi isolati nel ramo 'fx' di costruisci.py
-MARGINE_OCR = (60, 240, 10, 10)   # sinistra, destra, sopra, sotto attorno al cambio, per leggere il nome
-CONF_NOME = 0.75          # fiducia minima dell'OCR per dare un nome a un controllo
-MAX_OCR = 150            # letture OCR al massimo per video (i candidati piu' netti)
-BARRE_CROMA = 25.0        # croma Lab oltre il quale un pixel e' "colorato" (le interfacce sono quasi tutte grigie)
-MAX_BARRE = 12            # barre lette al massimo per fotogramma chiave
-PASSO_CHIAVE = 40         # un fotogramma chiave ogni 40 fotogrammi (20 s), piu' il secondo secondo del video
+LARGHEZZA = 1280          # the ocr3 boxes and the pixel thresholds are in this scale
+FPS = 2                   # one frame every 0.5 s
+SOGLIA_PIXEL = 60         # sum of BGR differences above which a pixel counts as "changed"
+ORIZZONTE = 9             # frames looked at ahead: +3 (1.5 s) confirms, +9 (4.5 s) confirms it holds
+MAX_PER_MINUTO = 6        # channel cap: more than this is noise
+# Limits the output to events close to the voice, avoiding isolated events in the 'fx' branch of
+# costruisci.py.
+SOLO_CON_VOCE = True
+MARGINE_OCR = (60, 240, 10, 10)   # left, right, top, bottom around the change, to read the name
+CONF_NOME = 0.75          # minimum OCR confidence to give a control a name
+MAX_OCR = 150             # OCR readings per video at most (the sharpest candidates)
+BARRE_CROMA = 25.0        # Lab chroma above which a pixel is "coloured" (interfaces are almost all grey)
+MAX_BARRE = 12            # bars read per key frame at most
+PASSO_CHIAVE = 40         # one key frame every 40 frames (20 s), plus the second second of the video
+
+BYTE_PER_MB = 1048576.0   # bytes in a megabyte
+LAB_NEUTRO = 128.0        # Lab a/b value of a colourless pixel in OpenCV's 8-bit encoding
+MAX_TESTO = 80            # characters kept of a label read from the screen
+LATO_PALLINO = 40         # largest side (px) of a dot or checkbox
+LATO_CURSORE = 32         # largest side (px) of one of the two small blobs a moving cursor leaves
+BIANCO_V_MIN = 225        # HSV value above which (with low saturation) a pixel is pure white
+BIANCO_S_MAX = 40         # HSV saturation below which a bright pixel is pure white
+NERO_V_MAX = 30           # HSV value below which a pixel is pure black
+DELTA_MIN = 15.0          # minimum Lab distance for a control to count as changed
+DELTA_VOCE_SCELTA = 40.0  # delta assumed for a chosen item, which has no measured change
+FORZA_BASE = 0.5          # strength of an event with no spoken support
+FORZA_PESO = 0.49         # extra strength given by the score (the total stays below 1)
 
 
-# ---------------------------------------------------------------- utilita' di lettura
+# ---------------------------------------------------------------- reading utilities
 def _json(percorso, predefinito):
+    """Load a JSON file and return its content, or `predefinito` if it is missing or unreadable."""
     try:
         with open(percorso, encoding="utf-8") as f:
             return json.load(f)
@@ -54,15 +72,19 @@ def _json(percorso, predefinito):
 
 
 def colore_anello(frame, zona, spessore=3):
-    """Mediana Lab dell'anello esterno alla zona."""
+    """Median Lab colour of the ring just outside `zona` (x0, y0, x1, y1), `spessore` pixels thick."""
     if frame is None:
         return None
     h, w = frame.shape[:2]
     x0, y0, x1, y1 = [int(round(v)) for v in zona]
-    x0 = max(0, min(w - 1, x0)); x1 = max(x0 + 1, min(w, x1))
-    y0 = max(0, min(h - 1, y0)); y1 = max(y0 + 1, min(h, y1))
-    ax0 = max(0, x0 - spessore); ay0 = max(0, y0 - spessore)
-    ax1 = min(w, x1 + spessore); ay1 = min(h, y1 + spessore)
+    x0 = max(0, min(w - 1, x0))
+    x1 = max(x0 + 1, min(w, x1))
+    y0 = max(0, min(h - 1, y0))
+    y1 = max(y0 + 1, min(h, y1))
+    ax0 = max(0, x0 - spessore)
+    ay0 = max(0, y0 - spessore)
+    ax1 = min(w, x1 + spessore)
+    ay1 = min(h, y1 + spessore)
     ritaglio = frame[ay0:ay1, ax0:ax1]
     maschera = np.ones(ritaglio.shape[:2], dtype=bool)
     maschera[y0-ay0:y1-ay0, x0-ax0:x1-ax0] = False
@@ -74,16 +96,17 @@ def colore_anello(frame, zona, spessore=3):
 
 
 def _distanza(a, b):
+    """Euclidean distance between two colour vectors (Lab triples)."""
     return float(np.linalg.norm(np.asarray(a, dtype=float) - np.asarray(b, dtype=float)))
 
 
 def ram_picco_mb():
-    """Picco di memoria del processo in MB."""
+    """Peak memory of this process in MB (1 decimal), or None when the platform does not report it."""
     if sys.platform != "win32":
         try:
             import resource
             valore = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-            divisore = 1048576.0 if sys.platform == "darwin" else 1024.0
+            divisore = BYTE_PER_MB if sys.platform == "darwin" else 1024.0
             return round(valore / divisore, 1)
         except (ImportError, AttributeError, OSError):
             return None
@@ -93,661 +116,1128 @@ def ram_picco_mb():
         from ctypes import wintypes
 
         class _Contatori(ctypes.Structure):
+            """PROCESS_MEMORY_COUNTERS structure filled in by K32GetProcessMemoryInfo."""
+
             _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD),
-                        ("PeakWorkingSetSize", ctypes.c_size_t), ("WorkingSetSize", ctypes.c_size_t),
-                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t), ("QuotaPagedPoolUsage", ctypes.c_size_t),
-                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t), ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
-                        ("PagefileUsage", ctypes.c_size_t), ("PeakPagefileUsage", ctypes.c_size_t)]
-        c = _Contatori(); c.cb = ctypes.sizeof(c)
+                        ("PeakWorkingSetSize", ctypes.c_size_t),
+                        ("WorkingSetSize", ctypes.c_size_t),
+                        ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                        ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                        ("PagefileUsage", ctypes.c_size_t),
+                        ("PeakPagefileUsage", ctypes.c_size_t)]
+
+        contatori = _Contatori()
+        contatori.cb = ctypes.sizeof(contatori)
         info = ctypes.windll.kernel32.K32GetProcessMemoryInfo
-        info.argtypes = [wintypes.HANDLE, ctypes.POINTER(_Contatori), wintypes.DWORD]; info.restype = wintypes.BOOL
-        corrente = ctypes.windll.kernel32.GetCurrentProcess; corrente.restype = wintypes.HANDLE
-        if not info(corrente(), ctypes.byref(c), c.cb): return None
-        return round(c.PeakWorkingSetSize / 1048576.0, 1)
+        info.argtypes = [wintypes.HANDLE, ctypes.POINTER(_Contatori), wintypes.DWORD]
+        info.restype = wintypes.BOOL
+        corrente = ctypes.windll.kernel32.GetCurrentProcess
+        corrente.restype = wintypes.HANDLE
+        if not info(corrente(), ctypes.byref(contatori), contatori.cb):
+            return None
+        return round(contatori.PeakWorkingSetSize / BYTE_PER_MB, 1)
     except Exception:
         return None
 
 
-# ---------------------------------------------------------------- E1: voce scelta in una lettura
+# ---------------------------------------------------------------- E1: item chosen in a reading
 def _gruppi(voci):
-    """Gruppi di almeno 3 voci allineate (stessa riga o stessa colonna), di altezza simile; in colonna contigue
-    (una voce entra solo se dista dalla vicina al massimo 2,5 altezze: le sezioni di un menu restano separate)."""
+    """Find groups of at least 3 aligned items (same row or same column) of similar height.
+
+    In a column the items must also be contiguous: an item joins only if it is at most 2.5 heights
+    away from its neighbour, so the sections of a menu stay separate. Returns a sorted list of
+    index tuples into `voci`.
+    """
     gruppi = set()
     for i, voce in enumerate(voci):
         h = max(1.0, voce["zona"][3] - voce["zona"][1])
-        cy = (voce["zona"][1] + voce["zona"][3]) / 2.0
+        centro_y = (voce["zona"][1] + voce["zona"][3]) / 2.0
         verticali, orizzontali = [], []
         for j, altra in enumerate(voci):
-            ah = max(1.0, altra["zona"][3] - altra["zona"][1])
-            acy = (altra["zona"][1] + altra["zona"][3]) / 2.0
-            simile = 0.75 <= ah / h <= 1.25
-            if simile and abs(altra["zona"][0] - voce["zona"][0]) <= max(3.0, 0.3*h): verticali.append(j)
-            if simile and abs(acy-cy) <= 0.5*max(h, ah): orizzontali.append(j)
+            altezza_altra = max(1.0, altra["zona"][3] - altra["zona"][1])
+            centro_y_altra = (altra["zona"][1] + altra["zona"][3]) / 2.0
+            simile = 0.75 <= altezza_altra / h <= 1.25
+            if simile and abs(altra["zona"][0] - voce["zona"][0]) <= max(3.0, 0.3*h):
+                verticali.append(j)
+            if simile and abs(centro_y_altra - centro_y) <= 0.5*max(h, altezza_altra):
+                orizzontali.append(j)
         verticali = _contigue(voci, verticali, i)
-        if len(verticali) >= 3: gruppi.add(tuple(sorted(verticali)))
-        if len(orizzontali) >= 3: gruppi.add(tuple(sorted(orizzontali)))
+        if len(verticali) >= 3:
+            gruppi.add(tuple(sorted(verticali)))
+        if len(orizzontali) >= 3:
+            gruppi.add(tuple(sorted(orizzontali)))
     return sorted(gruppi)
 
 
 def _contigue(voci, indici, i):
-    """Dalla colonna intera, la parte contigua che contiene la voce i."""
+    """From a whole column of item indices, keep the contiguous stretch that contains item `i`."""
     ordine = sorted(indici, key=lambda k: voci[k]["zona"][1])
-    if i not in ordine: return [i]
-    pos = ordine.index(i); da = pos; a = pos
-    def vuoto(k1, k2):
-        altezza = max(voci[k1]["zona"][3] - voci[k1]["zona"][1], voci[k2]["zona"][3] - voci[k2]["zona"][1], 1.0)
-        return voci[k2]["zona"][1] - voci[k1]["zona"][3] <= 2.5 * altezza
-    while da > 0 and vuoto(ordine[da-1], ordine[da]): da -= 1
-    while a < len(ordine) - 1 and vuoto(ordine[a], ordine[a+1]): a += 1
-    return ordine[da:a+1]
+    if i not in ordine:
+        return [i]
+    pos = ordine.index(i)
+    primo = pos
+    ultimo = pos
+
+    def vuoto(sopra, sotto):
+        altezza = max(voci[sopra]["zona"][3] - voci[sopra]["zona"][1],
+                      voci[sotto]["zona"][3] - voci[sotto]["zona"][1], 1.0)
+        return voci[sotto]["zona"][1] - voci[sopra]["zona"][3] <= 2.5 * altezza
+
+    while primo > 0 and vuoto(ordine[primo-1], ordine[primo]):
+        primo -= 1
+    while ultimo < len(ordine) - 1 and vuoto(ordine[ultimo], ordine[ultimo+1]):
+        ultimo += 1
+    return ordine[primo:ultimo+1]
 
 
 def scelte(voci):
-    """Le voci scelte: in ogni gruppo di voci allineate (stessa riga o stessa colonna) la maggioranza ha lo stesso fondo
-    (entro 8 in Lab); una voce che se ne stacca di piu' di 20 ed e' piu' colorata della maggioranza e' la scelta.
-    Le voci scure o di altra natura finite per allineamento nel gruppo non contano come scelta."""
+    """Return the chosen items among `voci`, one per distinct text.
+
+    In every group of aligned items (same row or column) the majority has the same background
+    (within 8 in Lab); an item that departs by more than 20 and is more coloured than the majority
+    is the choice. Dark or unrelated items that ended up in the group by alignment do not count.
+    """
     trovate = {}
     for gruppo in _gruppi(voci):
         validi = [i for i in gruppo if voci[i].get("lab") is not None]
-        if len(validi) < 3: continue
+        if len(validi) < 3:
+            continue
         labs = np.asarray([voci[i]["lab"] for i in validi], dtype=float)
         vicini = [np.linalg.norm(labs - labs[k], axis=1) <= 8.0 for k in range(len(validi))]
-        maggioranza = vicini[int(np.argmax([v.sum() for v in vicini]))]
+        maggioranza = vicini[int(np.argmax([vicino.sum() for vicino in vicini]))]
         minimo = 2 if len(validi) == 3 else 3
-        if maggioranza.sum() < minimo or maggioranza.sum() < 0.4 * len(validi): continue
-        centro = np.median(labs[maggioranza], axis=0); croma_centro = _croma(centro)
-        devianti = [j for j in range(len(validi)) if not maggioranza[j] and np.linalg.norm(labs[j] - centro) > 20.0]
+        if maggioranza.sum() < minimo or maggioranza.sum() < 0.4 * len(validi):
+            continue
+        centro = np.median(labs[maggioranza], axis=0)
+        croma_centro = _croma(centro)
+        devianti = [j for j in range(len(validi))
+                    if not maggioranza[j] and np.linalg.norm(labs[j] - centro) > 20.0]
         colorate = [j for j in devianti if _croma(labs[j]) - croma_centro >= 15.0]
-        if 1 <= len(colorate) <= 2:                                                    # una scelta, o due bottoni accesi insieme; di piu' e' un elenco colorato
+        # One choice, or two buttons switched on together; more than that is a coloured list.
+        if 1 <= len(colorate) <= 2:
             for j in colorate:
-                voce = voci[validi[j]]; trovate.setdefault(voce["testo"], voce)
+                voce = voci[validi[j]]
+                trovate.setdefault(voce["testo"], voce)
     return list(trovate.values())
 
 
 def scelto(voci):
-    """Una voce scelta (la prima), None se nessuna."""
+    """Return the first chosen item among `voci`, or None when no item is chosen."""
     trovate = scelte(voci)
     return trovate[0] if trovate else None
 
 
 def _cursore_fuori(cursori, t, zona):
-    vicini = [x for x in cursori if abs(float(x[0])-float(t)) <= 0.25]
-    if not vicini: return True
-    _, x, y = min(vicini, key=lambda q: abs(float(q[0])-float(t)))[:3]
+    """True if the cursor was not inside `zona` around time `t` (or no cursor sample is within 0.25 s)."""
+    vicini = [punto for punto in cursori if abs(float(punto[0])-float(t)) <= 0.25]
+    if not vicini:
+        return True
+    _, x, y = min(vicini, key=lambda campione: abs(float(campione[0])-float(t)))[:3]
     x0, y0, x1, y1 = zona
     return not (x0 <= x <= x1 and y0 <= y <= y1)
 
 
-# ---------------------------------------------------------------- E1b: barre evidenziate in un fotogramma fermo
+# ---------------------------------------------------------------- E1b: bars highlighted in a still frame
 def _lab_barra(frame, scatola):
-    """Lab mediano dei pixel colorati dentro la scatola; None se meno del 30% e' colorato."""
+    """Median Lab of the coloured pixels inside the box, or None when under 30% of them are coloured."""
     x0, y0, x1, y1 = scatola
     lab = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2LAB).reshape(-1, 3)
-    croma = np.hypot(lab[:, 1].astype(np.float32) - 128.0, lab[:, 2].astype(np.float32) - 128.0)
+    croma = np.hypot(lab[:, 1].astype(np.float32) - LAB_NEUTRO, lab[:, 2].astype(np.float32) - LAB_NEUTRO)
     colorati = lab[croma >= BARRE_CROMA]
-    if len(colorati) < 0.3 * len(lab): return None
+    if len(colorati) < 0.3 * len(lab):
+        return None
     return np.median(colorati.astype(float), axis=0)
 
 
 def barre_evidenziate(frame):
-    """Rettangoli pieni e colorati (la voce scelta di un elenco, il bottone acceso) in un fotogramma:
-    [(scatola, Lab mediano)]. Non serve il testo: serve per le zone che non cambiano mai e quindi nessuna lettura le vede."""
+    """Find the solid coloured rectangles of a frame (a chosen list entry, a lit button).
+
+    Returns [(box, median Lab)], at most MAX_BARRE. No text is needed: this covers the zones that
+    never change, which no reading of changes can see.
+    """
     lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
-    croma = np.hypot(lab[:, :, 1].astype(np.float32) - 128.0, lab[:, :, 2].astype(np.float32) - 128.0)
+    croma = np.hypot(lab[:, :, 1].astype(np.float32) - LAB_NEUTRO,
+                     lab[:, :, 2].astype(np.float32) - LAB_NEUTRO)
     maschera = (croma >= BARRE_CROMA).astype(np.uint8)
-    chiusa = cv2.morphologyEx(maschera, cv2.MORPH_CLOSE, np.ones((5, 15), np.uint8))      # il testo sulla barra non e' colorato: si richiude
-    n, _, st, _ = cv2.connectedComponentsWithStats(chiusa)
-    larghezza = frame.shape[1]; barre = []
-    for k in range(1, n):
-        x, y, w, h, area = [int(v) for v in st[k]]
-        if w < 40 or h < 10 or h > 40 or w < 2.0 * h or w > 0.4 * larghezza: continue
-        if area < 0.85 * w * h: continue                                                   # un rettangolo pieno, non una linea o una macchia
+    # The text on the bar is not coloured: close the holes it leaves.
+    chiusa = cv2.morphologyEx(maschera, cv2.MORPH_CLOSE, np.ones((5, 15), np.uint8))
+    quante, _, statistiche, _ = cv2.connectedComponentsWithStats(chiusa)
+    larghezza = frame.shape[1]
+    barre = []
+    for k in range(1, quante):
+        x, y, w, h, area = [int(valore) for valore in statistiche[k]]
+        if w < 40 or h < 10 or h > 40 or w < 2.0 * h or w > 0.4 * larghezza:
+            continue
+        # A solid rectangle, not a line or a smear.
+        if area < 0.85 * w * h:
+            continue
         mediano = _lab_barra(frame, [x, y, x + w, y + h])
-        if mediano is not None: barre.append(([x, y, x + w, y + h], mediano))
+        if mediano is not None:
+            barre.append(([x, y, x + w, y + h], mediano))
     return barre[:MAX_BARRE]
 
 
 def nome_barra(righe, scatola):
-    """La scritta dentro la barra (la riga di testo che piu' si sovrappone), None se non ce n'e'."""
-    bx0, by0, bx1, by1 = scatola; migliore = None
-    for testo, conf, r in righe:
-        if conf < CONF_NOME: continue
-        ix = max(0, min(bx1, r[2]) - max(bx0, r[0])); iy = max(0, min(by1, r[3]) - max(by0, r[1]))
-        area = float(max(1, (r[2]-r[0])*(r[3]-r[1])))
-        if ix * iy >= 0.5 * area and (migliore is None or ix * iy > migliore[0]): migliore = (ix * iy, testo)
-    if migliore is None: return None
+    """Return the text written inside a bar (the OCR line overlapping it most), or None if there is none.
+
+    `righe` is [(text, confidence, [x0, y0, x1, y1])]; `scatola` is the bar box in pixels.
+    """
+    bx0, by0, bx1, by1 = scatola
+    migliore = None
+    for testo, conf, riquadro in righe:
+        if conf < CONF_NOME:
+            continue
+        sovr_x = max(0, min(bx1, riquadro[2]) - max(bx0, riquadro[0]))
+        sovr_y = max(0, min(by1, riquadro[3]) - max(by0, riquadro[1]))
+        area = float(max(1, (riquadro[2]-riquadro[0])*(riquadro[3]-riquadro[1])))
+        if sovr_x * sovr_y >= 0.5 * area and (migliore is None or sovr_x * sovr_y > migliore[0]):
+            migliore = (sovr_x * sovr_y, testo)
+    if migliore is None:
+        return None
     testo = pulisci_ocr(migliore[1])
-    return testo[:80] if e_voce(testo) else None
+    return testo[:MAX_TESTO] if e_voce(testo) else None
 
 
 class Barre:
-    """Barre evidenziate nei fotogrammi chiave: le conferma un secondo dopo, le nomina (una sola lettura per barra ferma)
-    e segnala solo la prima volta che compaiono."""
+    """Tracks highlighted bars across key frames.
+
+    A bar is confirmed one second after it is seen, named with one OCR reading per still bar, and
+    reported only the first time it appears. Detected events accumulate in `eventi`.
+    """
 
     def __init__(self, lettore, larghezza, altezza):
-        self.lettore = lettore; self.w = larghezza; self.h = altezza
-        self.pendenti = []; self.cache = {}; self.attive = {}; self.eventi = []; self.stat = collections.Counter()
+        """Store the OCR reader and the frame size (px); start with no pending key frame."""
+        self.lettore = lettore
+        self.w = larghezza
+        self.h = altezza
+        self.pendenti = []
+        self.cache = {}
+        self.attive = {}
+        self.eventi = []
+        self.stat = collections.Counter()
 
     def fotogramma_chiave(self, n, frame):
+        """Detect the bars of key frame number `n` and queue them for confirmation; return their count."""
         barre = barre_evidenziate(frame)
         self.pendenti.append({"n": n, "barre": barre, "frame": None})
         return len(barre)
 
     def aggiungi(self, n, frame):
-        """Chiamata a ogni fotogramma: chiude i fotogrammi chiave di almeno 1 s fa."""
-        for p in [q for q in self.pendenti if n >= q["n"] + 2]:
-            self.pendenti.remove(p); self._chiudi(p, frame)
+        """Feed frame `n`: close every queued key frame that is at least 1 s old (2 frames at 2 fps)."""
+        for pendente in [q for q in self.pendenti if n >= q["n"] + 2]:
+            self.pendenti.remove(pendente)
+            self._chiudi(pendente, frame)
 
     def fine(self, frame):
-        for p in list(self.pendenti): self.pendenti.remove(p); self._chiudi(p, frame)
+        """At the end of the video, close all the queued key frames using the last frame."""
+        for pendente in list(self.pendenti):
+            self.pendenti.remove(pendente)
+            self._chiudi(pendente, frame)
 
-    def _chiudi(self, p, dopo):
+    def _chiudi(self, pendente, dopo):
+        """Confirm the bars of one key frame against the later frame `dopo`, name them, emit new ones.
+
+        A bar must keep its colour (Lab distance under 12) and have a readable name; a bar that
+        disappears is forgotten, so if it comes back it is a new choice.
+        """
         presenti = {}
-        for scatola, lab in p["barre"]:
+        for scatola, lab in pendente["barre"]:
             x0, y0, x1, y1 = scatola
             adesso = _lab_barra(dopo, scatola)
-            if adesso is None or _distanza(adesso, lab) > 12.0: self.stat["barra che non dura"] += 1; continue
-            chiave = (x0 // 6, y0 // 6, x1 // 6, y1 // 6); noto = self.cache.get(chiave)
-            if noto is not None and _distanza(noto[1], lab) < 8.0: nome = noto[0]
+            if adesso is None or _distanza(adesso, lab) > 12.0:
+                self.stat["barra che non dura"] += 1
+                continue
+            chiave = (x0 // 6, y0 // 6, x1 // 6, y1 // 6)
+            noto = self.cache.get(chiave)
+            if noto is not None and _distanza(noto[1], lab) < 8.0:
+                nome = noto[0]
             else:
-                ox0, oy0, ox1, oy1 = max(0, x0 - 4), max(0, y0 - 4), min(self.w, x1 + 4), min(self.h, y1 + 4)
-                nome = nome_barra(self.lettore.leggi(dopo[oy0:oy1, ox0:ox1], [ox0, oy0]), scatola); self.cache[chiave] = (nome, lab)
-            if nome is None: self.stat["barra senza nome"] += 1; continue
+                ox0, oy0 = max(0, x0 - 4), max(0, y0 - 4)
+                ox1, oy1 = min(self.w, x1 + 4), min(self.h, y1 + 4)
+                nome = nome_barra(self.lettore.leggi(dopo[oy0:oy1, ox0:ox1], [ox0, oy0]), scatola)
+                self.cache[chiave] = (nome, lab)
+            if nome is None:
+                self.stat["barra senza nome"] += 1
+                continue
             presenti[nome] = scatola
-        for nome in [k for k in self.attive if k not in presenti]: del self.attive[nome]       # sparita: se torna e' una scelta nuova
+        # Gone: if it returns, it is a new choice.
+        for nome in [attivo for attivo in self.attive if attivo not in presenti]:
+            del self.attive[nome]
         for nome, scatola in presenti.items():
-            if nome in self.attive: continue
-            self.attive[nome] = scatola; x0, y0, x1, y1 = scatola; t = round(p["n"] / float(FPS), 2)
-            self.eventi.append({"t": t, "testo": nome, "zona_norm": [x0 / float(self.w), y0 / float(self.h), x1 / float(self.w), y1 / float(self.h)]})
+            if nome in self.attive:
+                continue
+            self.attive[nome] = scatola
+            x0, y0, x1, y1 = scatola
+            tempo = round(pendente["n"] / float(FPS), 2)
+            self.eventi.append({"t": tempo, "testo": nome,
+                                "zona_norm": [x0 / float(self.w), y0 / float(self.h),
+                                              x1 / float(self.w), y1 / float(self.h)]})
 
 
-# ---------------------------------------------------------------- E2: cambi compatti e persistenti
-def _diff(x, y):
-    return np.abs(x.astype(np.int16) - y.astype(np.int16)).sum(2) > SOGLIA_PIXEL
+# ---------------------------------------------------------------- E2: compact and persistent changes
+def _diff(immagine_a, immagine_b):
+    """Boolean mask of the pixels whose summed BGR difference between two images exceeds SOGLIA_PIXEL."""
+    return np.abs(immagine_a.astype(np.int16) - immagine_b.astype(np.int16)).sum(2) > SOGLIA_PIXEL
 
 
 def _croma(lab):
-    return float(np.hypot(float(lab[1]) - 128.0, float(lab[2]) - 128.0))
+    """Chroma of one Lab triple: its distance from the neutral axis."""
+    return float(np.hypot(float(lab[1]) - LAB_NEUTRO, float(lab[2]) - LAB_NEUTRO))
 
 
 def _estremi(img, scatola, maschera):
-    """Quota dei pixel cambiati che sono bianchi o neri puri: la freccia del cursore e le icone bianco-nere."""
+    """Share of the changed pixels that are pure white or pure black (cursor arrow, black-and-white icons)."""
     x0, y0, x1, y1 = scatola
     hsv = cv2.cvtColor(img[y0:y1, x0:x1], cv2.COLOR_BGR2HSV).reshape(-1, 3)[maschera.reshape(-1)]
-    return float((((hsv[:, 2] > 225) & (hsv[:, 1] < 40)) | (hsv[:, 2] < 30)).mean()) if len(hsv) else 0.0
+    if len(hsv) == 0:
+        return 0.0
+    bianchi = (hsv[:, 2] > BIANCO_V_MIN) & (hsv[:, 1] < BIANCO_S_MAX)
+    neri = hsv[:, 2] < NERO_V_MAX
+    return float((bianchi | neri).mean())
 
 
-def misure_cambio(a, b, c, d, scatola, maschera):
-    """Misure di un cambio fra il fotogramma prima (a), subito dopo (b), 1,5 s dopo (c), 4,5 s dopo (d).
-    scatola=[x0,y0,x1,y1] in pixel; maschera = pixel cambiati dentro la scatola (bool)."""
+def misure_cambio(prima, subito_dopo, dopo_breve, dopo_lungo, scatola, maschera):
+    """Measure one change across four frames: before, just after, 1.5 s after, 4.5 s after.
+
+    `scatola` is [x0, y0, x1, y1] in pixels; `maschera` is the boolean mask of the changed pixels
+    inside the box. Returns the persistence ratios, the Lab distance and the pure white/black share.
+    """
     x0, y0, x1, y1 = scatola
-    ra, rb, rc, rd = a[y0:y1, x0:x1], b[y0:y1, x0:x1], c[y0:y1, x0:x1], d[y0:y1, x0:x1]
+    ritaglio_prima = prima[y0:y1, x0:x1]
+    ritaglio_subito = subito_dopo[y0:y1, x0:x1]
+    ritaglio_breve = dopo_breve[y0:y1, x0:x1]
+    ritaglio_lungo = dopo_lungo[y0:y1, x0:x1]
     sel = maschera.reshape(-1)
-    lab_a = np.median(cv2.cvtColor(ra, cv2.COLOR_BGR2LAB).reshape(-1, 3)[sel].astype(float), axis=0)
-    lab_c = np.median(cv2.cvtColor(rc, cv2.COLOR_BGR2LAB).reshape(-1, 3)[sel].astype(float), axis=0)
-    hsv = cv2.cvtColor(rc, cv2.COLOR_BGR2HSV).reshape(-1, 3)[sel]
-    return {"persiste": float(_diff(ra, rc)[maschera].mean()),            # il cambio c'e' ancora dopo 1,5 s
-            "assestato": float(_diff(rb, rc)[maschera].mean()),           # e non ha continuato a muoversi
-            "tiene": float(_diff(ra, rd)[maschera].mean()),               # c'e' ancora dopo 4,5 s (il cursore se ne va, lo stato resta)
-            "delta": _distanza(lab_a, lab_c),
-            "estremi": float((((hsv[:, 2] > 225) & (hsv[:, 1] < 40)) | (hsv[:, 2] < 30)).mean())}   # bianco/nero puri: la freccia del cursore
+    pixel_prima = cv2.cvtColor(ritaglio_prima, cv2.COLOR_BGR2LAB).reshape(-1, 3)[sel]
+    lab_prima = np.median(pixel_prima.astype(float), axis=0)
+    pixel_dopo = cv2.cvtColor(ritaglio_breve, cv2.COLOR_BGR2LAB).reshape(-1, 3)[sel]
+    lab_dopo = np.median(pixel_dopo.astype(float), axis=0)
+    hsv = cv2.cvtColor(ritaglio_breve, cv2.COLOR_BGR2HSV).reshape(-1, 3)[sel]
+    bianchi = (hsv[:, 2] > BIANCO_V_MIN) & (hsv[:, 1] < BIANCO_S_MAX)
+    neri = hsv[:, 2] < NERO_V_MAX
+    return {
+        # The change is still there after 1.5 s.
+        "persiste": float(_diff(ritaglio_prima, ritaglio_breve)[maschera].mean()),
+        # And it did not keep moving.
+        "assestato": float(_diff(ritaglio_subito, ritaglio_breve)[maschera].mean()),
+        # Still there after 4.5 s (the cursor goes away, a state stays).
+        "tiene": float(_diff(ritaglio_prima, ritaglio_lungo)[maschera].mean()),
+        "delta": _distanza(lab_prima, lab_dopo),
+        # Pure white/black: the cursor arrow.
+        "estremi": float((bianchi | neri).mean()),
+    }
 
 
 class Rivelatore:
-    """Riceve i fotogrammi a 2 fps (BGR) e raccoglie i cambi compatti e persistenti.
-    In memoria restano solo ORIZZONTE+1 fotogrammi, il contatore dei pixel vivi e i ritagli dei candidati."""
+    """Collects compact, persistent changes from the 2 fps BGR frames fed to it.
+
+    Memory holds only ORIZZONTE+1 frames, the per-pixel "alive" counter and the crops of the candidates.
+    """
 
     def __init__(self, larghezza, altezza, soglie=None):
-        self.w = int(larghezza); self.h = int(altezza)
+        """Set the frame size (px) and the thresholds; `soglie` overrides the defaults by name."""
+        self.w = int(larghezza)
+        self.h = int(altezza)
         self.buf = collections.deque(maxlen=ORIZZONTE + 1)
-        self.i = 0; self.intervalli = 0
+        self.i = 0
+        self.intervalli = 0
         self.vivi = np.zeros((self.h, self.w), np.uint16)
-        self.candidati = []; self.scartati = collections.Counter()
-        self.k2 = np.ones((2, 2), np.uint8); self.k3 = np.ones((3, 3), np.uint8); self.k9 = np.ones((9, 9), np.uint8)
-        self.s = {"persiste": 0.5, "assestato": 0.4, "tiene": 0.35, "delta": 15.0, "estremi": 0.9, "npix": 30, "lato": 9,
-                  "riempimento": 0.25, "larga": 0.3, "alta": 0.12, "scena": 0.02, "scena_dopo": 0.03, "vivo": 0.10, "ricorrente": 6}
-        if soglie: self.s.update(soglie)
+        self.candidati = []
+        self.scartati = collections.Counter()
+        self.k2 = np.ones((2, 2), np.uint8)
+        self.k3 = np.ones((3, 3), np.uint8)
+        self.k9 = np.ones((9, 9), np.uint8)
+        self.s = {"persiste": 0.5, "assestato": 0.4, "tiene": 0.35, "delta": DELTA_MIN, "estremi": 0.9,
+                  "npix": 30, "lato": 9, "riempimento": 0.25, "larga": 0.3, "alta": 0.12, "scena": 0.02,
+                  "scena_dopo": 0.03, "vivo": 0.10, "ricorrente": 6}
+        if soglie:
+            self.s.update(soglie)
 
     def aggiungi(self, frame):
+        """Append one frame; once the buffer is full, analyse the interval it starts."""
         self.buf.append(frame)
         if len(self.buf) == self.buf.maxlen:
-            self._intervallo(list(self.buf)); self.i += 1
+            self._intervallo(list(self.buf))
+            self.i += 1
 
     def fine(self):
+        """Flush the remaining frames and return the surviving candidates.
+
+        Drops changes in zones that are almost always alive, duplicates, and counters or animations
+        (the same box changing again and again).
+        """
         resto = list(self.buf)[1:] if len(self.buf) == self.buf.maxlen else list(self.buf)
         while len(resto) >= 2:
-            self._intervallo(resto); resto = resto[1:]; self.i += 1
+            self._intervallo(resto)
+            resto = resto[1:]
+            self.i += 1
         vivo = self.vivi >= self.s["vivo"] * max(1, self.intervalli)
         tenuti = []
-        for c in self.candidati:
-            x0, y0, x1, y1 = c["scatola"]
-            if float(vivo[y0:y1, x0:x1].mean()) >= 0.5: self.scartati["zona sempre viva"] += 1; continue
-            tenuti.append(c)
+        for candidato in self.candidati:
+            x0, y0, x1, y1 = candidato["scatola"]
+            if float(vivo[y0:y1, x0:x1].mean()) >= 0.5:
+                self.scartati["zona sempre viva"] += 1
+                continue
+            tenuti.append(candidato)
         tenuti = self._unisci(tenuti)
-        ricorrenti = [sum(1 for q in tenuti if abs(q["t"] - c["t"]) > 2.0 and _iou(q["scatola"], c["scatola"]) > 0.5) for c in tenuti]
-        self.candidati = [c for c, n in zip(tenuti, ricorrenti) if n < self.s["ricorrente"]]     # contatori e animazioni: cambiano sempre nello stesso punto
+        ricorrenti = []
+        for candidato in tenuti:
+            ripetizioni = sum(1 for altro in tenuti
+                              if abs(altro["t"] - candidato["t"]) > 2.0
+                              and _iou(altro["scatola"], candidato["scatola"]) > 0.5)
+            ricorrenti.append(ripetizioni)
+        # Counters and animations: they always change in the same spot.
+        self.candidati = []
+        for candidato, ripetizioni in zip(tenuti, ricorrenti):
+            if ripetizioni < self.s["ricorrente"]:
+                self.candidati.append(candidato)
         self.scartati["contatore o animazione"] += len(tenuti) - len(self.candidati)
         return self.candidati
 
     def _unisci(self, candidati):
-        """Lo stesso cambio visto in due intervalli di fila resta uno solo (il primo)."""
+        """Keep only the first of a change seen in two consecutive intervals (within 1.5 s, IoU > 0.5)."""
         risultato = []
-        for c in sorted(candidati, key=lambda x: x["t"]):
+        for candidato in sorted(candidati, key=lambda dato: dato["t"]):
             doppio = False
-            for p in reversed(risultato):
-                if c["t"] - p["t"] > 1.5: break
-                if _iou(c["scatola"], p["scatola"]) > 0.5: doppio = True; break
-            if doppio: self.scartati["doppione"] += 1
-            else: risultato.append(c)
+            for precedente in reversed(risultato):
+                if candidato["t"] - precedente["t"] > 1.5:
+                    break
+                if _iou(candidato["scatola"], precedente["scatola"]) > 0.5:
+                    doppio = True
+                    break
+            if doppio:
+                self.scartati["doppione"] += 1
+            else:
+                risultato.append(candidato)
         return risultato
 
-    def _intervallo(self, F):
-        a, b = F[0], F[1]
-        c = F[min(3, len(F)-1)]; d = F[min(ORIZZONTE, len(F)-1)]
-        aperto = cv2.morphologyEx(_diff(a, b).astype(np.uint8), cv2.MORPH_OPEN, self.k2)   # via i puntini isolati di compressione; i tratti del testo (1-2 px) restano
+    def _intervallo(self, finestra):
+        """Analyse the interval that starts at `finestra[0]` and queue the changes that look like controls.
+
+        Frames used: before, just after, 1.5 s after and 4.5 s after (clamped to the window end).
+        Each changed blob goes through the size, persistence, colour and white/black filters; the
+        reason of every rejection is counted in `scartati`.
+        """
+        prima, subito_dopo = finestra[0], finestra[1]
+        dopo_breve = finestra[min(3, len(finestra)-1)]
+        dopo_lungo = finestra[min(ORIZZONTE, len(finestra)-1)]
+        # Drop isolated compression dots; text strokes (1-2 px) survive.
+        aperto = cv2.morphologyEx(_diff(prima, subito_dopo).astype(np.uint8), cv2.MORPH_OPEN, self.k2)
         self.intervalli += 1
         self.vivi[aperto > 0] += 1
-        if not aperto.any(): return
-        if float(aperto.mean()) > self.s["scena"]: self.scartati["scena che cambia"] += 1; return   # orbita, anteprima, pagina nuova: non e' un controllo
-        n, lab, st, _ = cv2.connectedComponentsWithStats(cv2.dilate(aperto, self.k9))
-        t = round((self.i + 1) / float(FPS), 2); dopo_calmo = None
+        if not aperto.any():
+            return
+        # Orbit, preview, new page: not a control.
+        if float(aperto.mean()) > self.s["scena"]:
+            self.scartati["scena che cambia"] += 1
+            return
+        quanti, etichette, statistiche, _ = cv2.connectedComponentsWithStats(cv2.dilate(aperto, self.k9))
+        tempo = round((self.i + 1) / float(FPS), 2)
+        dopo_calmo = None
         comp = []
-        for k in range(1, n):
-            x, y, ww, hh = [int(v) for v in st[k][:4]]
-            if ww > self.s["larga"] * self.w or hh > self.s["alta"] * self.h: self.scartati["troppo grande"] += 1; continue
-            sub = (lab[y:y+hh, x:x+ww] == k) & (aperto[y:y+hh, x:x+ww] > 0)
-            if int(sub.sum()) < self.s["npix"]: self.scartati["troppo piccolo"] += 1; continue
-            ys, xs = np.nonzero(sub)
-            x0, x1, y0, y1 = x + int(xs.min()), x + int(xs.max()) + 1, y + int(ys.min()), y + int(ys.max()) + 1
-            if x1 - x0 < self.s["lato"] or y1 - y0 < self.s["lato"]: self.scartati["troppo piccolo"] += 1; continue
-            maschera = sub[y0-y:y1-y, x0-x:x1-x]; scatola = [x0, y0, x1, y1]
-            if float(maschera.mean()) < self.s["riempimento"]: self.scartati["tratto sottile (disegno, cursore)"] += 1; continue
+        for k in range(1, quanti):
+            x, y, comp_w, comp_h = [int(valore) for valore in statistiche[k][:4]]
+            if comp_w > self.s["larga"] * self.w or comp_h > self.s["alta"] * self.h:
+                self.scartati["troppo grande"] += 1
+                continue
+            sub = (etichette[y:y+comp_h, x:x+comp_w] == k) & (aperto[y:y+comp_h, x:x+comp_w] > 0)
+            if int(sub.sum()) < self.s["npix"]:
+                self.scartati["troppo piccolo"] += 1
+                continue
+            indici_y, indici_x = np.nonzero(sub)
+            x0 = x + int(indici_x.min())
+            x1 = x + int(indici_x.max()) + 1
+            y0 = y + int(indici_y.min())
+            y1 = y + int(indici_y.max()) + 1
+            if x1 - x0 < self.s["lato"] or y1 - y0 < self.s["lato"]:
+                self.scartati["troppo piccolo"] += 1
+                continue
+            maschera = sub[y0-y:y1-y, x0-x:x1-x]
+            scatola = [x0, y0, x1, y1]
+            if float(maschera.mean()) < self.s["riempimento"]:
+                self.scartati["tratto sottile (disegno, cursore)"] += 1
+                continue
             comp.append((scatola, maschera))
-        # il cursore che si sposta lascia due macchie piccole bianco-nere nello stesso intervallo (dove era, dove e'): vanno via tutte e due
-        piccole = [i for i, (s_, m_) in enumerate(comp) if s_[2] - s_[0] <= 32 and s_[3] - s_[1] <= 32 and max(_estremi(a, s_, m_), _estremi(b, s_, m_)) >= 0.6]
+        # A moving cursor leaves two small black-and-white blobs in the same interval (where it was,
+        # where it is): both must go.
+        piccole = []
+        for indice, (scat, mask) in enumerate(comp):
+            if scat[2] - scat[0] <= LATO_CURSORE and scat[3] - scat[1] <= LATO_CURSORE:
+                if max(_estremi(prima, scat, mask), _estremi(subito_dopo, scat, mask)) >= 0.6:
+                    piccole.append(indice)
         cursore = set(piccole) if len(piccole) >= 2 else set()
-        for i_comp, (scatola, maschera) in enumerate(comp):
+        for indice_comp, (scatola, maschera) in enumerate(comp):
             x0, y0, x1, y1 = scatola
-            if i_comp in cursore: self.scartati["cursore che si sposta"] += 1; continue
-            m = misure_cambio(a, b, c, d, scatola, maschera)
-            if m["persiste"] < self.s["persiste"] or m["assestato"] > self.s["assestato"]: self.scartati["non persiste"] += 1; continue
-            if m["tiene"] < self.s["tiene"]: self.scartati["non tiene"] += 1; continue
-            if m["delta"] < self.s["delta"]: self.scartati["colore uguale"] += 1; continue
-            if m["estremi"] >= self.s["estremi"]: self.scartati["cursore o icona bianco-nera"] += 1; continue
+            if indice_comp in cursore:
+                self.scartati["cursore che si sposta"] += 1
+                continue
+            misure = misure_cambio(prima, subito_dopo, dopo_breve, dopo_lungo, scatola, maschera)
+            if misure["persiste"] < self.s["persiste"] or misure["assestato"] > self.s["assestato"]:
+                self.scartati["non persiste"] += 1
+                continue
+            if misure["tiene"] < self.s["tiene"]:
+                self.scartati["non tiene"] += 1
+                continue
+            if misure["delta"] < self.s["delta"]:
+                self.scartati["colore uguale"] += 1
+                continue
+            if misure["estremi"] >= self.s["estremi"]:
+                self.scartati["cursore o icona bianco-nera"] += 1
+                continue
             if dopo_calmo is None:
-                dopo_calmo = float(cv2.morphologyEx(_diff(b, c).astype(np.uint8), cv2.MORPH_OPEN, self.k3).mean()) <= self.s["scena_dopo"]
-            if not dopo_calmo: self.scartati["scena che cambia dopo"] += 1; continue
-            l, r, su, giu = MARGINE_OCR
-            ox0, oy0 = max(0, x0 - l), max(0, y0 - su); ox1, oy1 = min(self.w, x1 + r), min(self.h, y1 + giu)
-            self.candidati.append({"t": t, "scatola": scatola, "misure": m, "prima": a[oy0:oy1, ox0:ox1].copy(), "dopo": c[oy0:oy1, ox0:ox1].copy(), "origine": [ox0, oy0]})
+                differenza = _diff(subito_dopo, dopo_breve).astype(np.uint8)
+                residuo = cv2.morphologyEx(differenza, cv2.MORPH_OPEN, self.k3).mean()
+                dopo_calmo = float(residuo) <= self.s["scena_dopo"]
+            if not dopo_calmo:
+                self.scartati["scena che cambia dopo"] += 1
+                continue
+            sinistra, destra, sopra, sotto = MARGINE_OCR
+            ox0, oy0 = max(0, x0 - sinistra), max(0, y0 - sopra)
+            ox1, oy1 = min(self.w, x1 + destra), min(self.h, y1 + sotto)
+            self.candidati.append({"t": tempo, "scatola": scatola, "misure": misure,
+                                   "prima": prima[oy0:oy1, ox0:ox1].copy(),
+                                   "dopo": dopo_breve[oy0:oy1, ox0:ox1].copy(),
+                                   "origine": [ox0, oy0]})
 
 
-def _iou(p, q):
-    ix = max(0, min(p[2], q[2]) - max(p[0], q[0])); iy = max(0, min(p[3], q[3]) - max(p[1], q[1]))
-    inter = ix * iy
-    unione = (p[2]-p[0])*(p[3]-p[1]) + (q[2]-q[0])*(q[3]-q[1]) - inter
+def _iou(scatola_a, scatola_b):
+    """Intersection over union of two boxes [x0, y0, x1, y1]; 0.0 when the union is empty."""
+    sovr_x = max(0, min(scatola_a[2], scatola_b[2]) - max(scatola_a[0], scatola_b[0]))
+    sovr_y = max(0, min(scatola_a[3], scatola_b[3]) - max(scatola_a[1], scatola_b[1]))
+    inter = sovr_x * sovr_y
+    unione = ((scatola_a[2]-scatola_a[0])*(scatola_a[3]-scatola_a[1])
+              + (scatola_b[2]-scatola_b[0])*(scatola_b[3]-scatola_b[1]) - inter)
     return inter / float(unione) if unione > 0 else 0.0
 
 
-# ---------------------------------------------------------------- nome e verso del controllo
-def _pallino_in_testa(scatola, r):
-    """Il cambio e' un pallino o una casella (non piu' di 40 px, quasi quadrato) all'inizio della riga di testo r."""
-    larg = scatola[2] - scatola[0]; alt = scatola[3] - scatola[1]
-    if not (larg <= 40 and alt <= 40 and 0.5 <= larg / float(max(1, alt)) <= 2.0): return False
-    return (scatola[0] + scatola[2]) / 2.0 <= r[0] + 1.5 * max(1, r[3] - r[1])
+# ---------------------------------------------------------------- name and direction of the control
+def _pallino_in_testa(scatola, riga):
+    """True if the change is a dot or checkbox (max 40 px, nearly square) at the start of text line `riga`."""
+    larg = scatola[2] - scatola[0]
+    alt = scatola[3] - scatola[1]
+    if not (larg <= LATO_PALLINO and alt <= LATO_PALLINO and 0.5 <= larg / float(max(1, alt)) <= 2.0):
+        return False
+    return (scatola[0] + scatola[2]) / 2.0 <= riga[0] + 1.5 * max(1, riga[3] - riga[1])
 
 
 def scegli_etichetta(scatola, righe):
-    """righe = [(testo, confidenza, [x0,y0,x1,y1])] in pixel dello schermo.
-    Ritorna (testo, riquadro, relazione) con relazione 'copre' | 'accanto' | 'dentro'; None se nessun nome.
-      copre   = il cambio ricopre il testo (fondo del bottone, testo che sbiadisce)
-      accanto = il cambio e' un pallino/casella a fianco del testo (scelta, spunta)
-      dentro  = il cambio sta dentro un testo piu' grande: un numero che cambia, non uno stato (scartato dal chiamante)."""
+    """Pick the OCR line that names the control behind a change box.
+
+    `righe` is [(text, confidence, [x0, y0, x1, y1])] in screen pixels. Returns (text, box, relation)
+    or None when no line can name it. The relation is one of:
+      copre   = the change covers the text (button background, fading text)
+      accanto = the change is a dot or checkbox beside the text (choice, tick)
+      dentro  = the change sits inside a bigger text: a changing number, not a state (the caller drops it).
+    """
     bx0, by0, bx1, by1 = scatola
     area_b = float(max(1, (bx1-bx0)*(by1-by0)))
     migliore = None
-    for testo, conf, r in righe:
-        if conf < CONF_NOME or len(testo.strip()) < 2: continue
-        ix = max(0, min(bx1, r[2]) - max(bx0, r[0])); iy = max(0, min(by1, r[3]) - max(by0, r[1]))
-        inter = float(ix*iy); area_r = float(max(1, (r[2]-r[0])*(r[3]-r[1])))
+    for testo, conf, riquadro in righe:
+        if conf < CONF_NOME or len(testo.strip()) < 2:
+            continue
+        sovr_x = max(0, min(bx1, riquadro[2]) - max(bx0, riquadro[0]))
+        sovr_y = max(0, min(by1, riquadro[3]) - max(by0, riquadro[1]))
+        inter = float(sovr_x*sovr_y)
+        area_r = float(max(1, (riquadro[2]-riquadro[0])*(riquadro[3]-riquadro[1])))
         if inter >= 0.4 * area_r:
             punto = (inter, "copre")
         elif inter >= 0.8 * area_b and area_b < 0.4 * area_r:
             punto = (inter, "dentro")
         else:
             continue
-        if migliore is None or punto[0] > migliore[0]: migliore = (punto[0], testo, r, punto[1])
-    if migliore and migliore[3] == "dentro" and _pallino_in_testa(scatola, migliore[2]):     # il pallino letto come "O" insieme alla scritta: e' una scelta, non un numero
+        if migliore is None or punto[0] > migliore[0]:
+            migliore = (punto[0], testo, riquadro, punto[1])
+    # The dot read as an "O" together with the label: it is a choice, not a number.
+    if migliore and migliore[3] == "dentro" and _pallino_in_testa(scatola, migliore[2]):
         parti = migliore[1].strip().split(None, 1)
-        if len(parti) == 2 and len(parti[0]) <= 2 and (len(parti[0]) == 1 or not parti[0].isalpha()): return parti[1], migliore[2], "accanto"
-    if migliore: return migliore[1].strip(), migliore[2], migliore[3]
+        if len(parti) == 2 and len(parti[0]) <= 2 and (len(parti[0]) == 1 or not parti[0].isalpha()):
+            return parti[1], migliore[2], "accanto"
+    if migliore:
+        return migliore[1].strip(), migliore[2], migliore[3]
     larg, alt = bx1 - bx0, by1 - by0
-    if not (larg <= 40 and alt <= 40 and 0.5 <= larg / float(max(1, alt)) <= 2.0): return None   # solo pallini e caselle
-    cy = (by0 + by1) / 2.0
+    # Only dots and checkboxes.
+    if not (larg <= LATO_PALLINO and alt <= LATO_PALLINO and 0.5 <= larg / float(max(1, alt)) <= 2.0):
+        return None
+    centro_y = (by0 + by1) / 2.0
     scelti = []
-    for testo, conf, r in righe:
-        if conf < CONF_NOME or len(testo.strip()) < 2: continue
-        altezza = float(max(1, r[3]-r[1])); sovrapposto = min(by1, r[3]) - max(by0, r[1])
-        if sovrapposto < 0.5 * min(altezza, alt) and not (r[1] <= cy <= r[3]): continue
-        destra = r[0] - bx1; sinistra = bx0 - r[2]
-        if 0 <= destra <= 2.5 * altezza: scelti.append((destra, testo, r))
-        elif 0 <= sinistra <= 1.5 * altezza: scelti.append((sinistra + altezza, testo, r))
-    if not scelti: return None
-    _, testo, r = min(scelti, key=lambda q: q[0])
-    return testo.strip(), r, "accanto"
+    for testo, conf, riquadro in righe:
+        if conf < CONF_NOME or len(testo.strip()) < 2:
+            continue
+        altezza = float(max(1, riquadro[3]-riquadro[1]))
+        sovrapposto = min(by1, riquadro[3]) - max(by0, riquadro[1])
+        if sovrapposto < 0.5 * min(altezza, alt) and not (riquadro[1] <= centro_y <= riquadro[3]):
+            continue
+        destra = riquadro[0] - bx1
+        sinistra = bx0 - riquadro[2]
+        if 0 <= destra <= 2.5 * altezza:
+            scelti.append((destra, testo, riquadro))
+        elif 0 <= sinistra <= 1.5 * altezza:
+            scelti.append((sinistra + altezza, testo, riquadro))
+    if not scelti:
+        return None
+    _, testo, riquadro = min(scelti, key=lambda candidato: candidato[0])
+    return testo.strip(), riquadro, "accanto"
 
 
 def _fondo_e_segno(img, riquadro):
-    """Lab mediano del fondo (anello di 3 px attorno al riquadro) e del segno (i pixel piu' lontani dal fondo)."""
-    x0, y0, x1, y1 = [int(round(v)) for v in riquadro]
+    """Median Lab of the background (3 px ring around `riquadro`) and of the mark (pixels farthest from it).
+
+    Returns (background, mark), or (None, None) when the ring or the box is empty.
+    """
+    x0, y0, x1, y1 = [int(round(valore)) for valore in riquadro]
     fondo = colore_anello(img, [x0, y0, x1, y1], 3)
     zona = img[max(0, y0):max(0, y1), max(0, x0):max(0, x1)]
-    if fondo is None or zona.size == 0: return None, None
+    if fondo is None or zona.size == 0:
+        return None, None
     lab = cv2.cvtColor(zona, cv2.COLOR_BGR2LAB).reshape(-1, 3).astype(float)
-    d = np.linalg.norm(lab - fondo, axis=1)
-    lontani = lab[d >= max(20.0, float(np.percentile(d, 80)))]
+    distanze = np.linalg.norm(lab - fondo, axis=1)
+    lontani = lab[distanze >= max(20.0, float(np.percentile(distanze, 80)))]
     return fondo, (np.median(lontani, axis=0) if len(lontani) >= 4 else fondo)
 
 
 def misura_stato(prima, dopo, riquadro):
-    """Confronta fondo e segno del controllo prima/dopo. Ritorna {'delta','verso'} o None se il controllo non cambia.
-    Si guarda il controllo (il riquadro del testo o del pallino), non l'area che e' cambiata: un cerchio disegnato
-    attorno o un cursore nella stessa area non contano."""
-    fa, sa = _fondo_e_segno(prima, riquadro); fb, sb = _fondo_e_segno(dopo, riquadro)
-    if fa is None or fb is None: return None
-    d_fondo = _distanza(fa, fb); d_segno = _distanza(sa, sb); delta = max(d_fondo, d_segno)
-    if delta < 15.0: return None
-    ca, cb = (_croma(fa), _croma(fb)) if d_fondo >= d_segno else (_croma(sa), _croma(sb))
-    if cb - ca >= 8.0: verso = "acceso"
-    elif ca - cb >= 8.0: verso = "spento"
-    else: verso = "acceso" if abs(sb[0] - fb[0]) >= abs(sa[0] - fa[0]) else "spento"     # piu' contrastato = acceso
+    """Compare background and mark of a control before and after a change.
+
+    Returns {'delta', 'verso'} (verso is 'acceso' or 'spento'), or None if the control does not change.
+    The control itself is examined (the box of the text or dot), not the changed area: a circle drawn
+    around it or a cursor in the same area do not count.
+    """
+    fondo_prima, segno_prima = _fondo_e_segno(prima, riquadro)
+    fondo_dopo, segno_dopo = _fondo_e_segno(dopo, riquadro)
+    if fondo_prima is None or fondo_dopo is None:
+        return None
+    d_fondo = _distanza(fondo_prima, fondo_dopo)
+    d_segno = _distanza(segno_prima, segno_dopo)
+    delta = max(d_fondo, d_segno)
+    if delta < DELTA_MIN:
+        return None
+    if d_fondo >= d_segno:
+        croma_prima, croma_dopo = _croma(fondo_prima), _croma(fondo_dopo)
+    else:
+        croma_prima, croma_dopo = _croma(segno_prima), _croma(segno_dopo)
+    if croma_dopo - croma_prima >= 8.0:
+        verso = "acceso"
+    elif croma_prima - croma_dopo >= 8.0:
+        verso = "spento"
+    else:
+        # More contrast = on.
+        contrasto_prima = abs(segno_prima[0] - fondo_prima[0])
+        contrasto_dopo = abs(segno_dopo[0] - fondo_dopo[0])
+        verso = "acceso" if contrasto_dopo >= contrasto_prima else "spento"
     return {"delta": delta, "verso": verso}
 
 
 def e_voce(testo):
-    """Una voce dell'interfaccia ha lettere; un contatore o un valore e' fatto soprattutto di cifre."""
-    lettere = sum(1 for ch in testo if ch.isalpha()); cifre = sum(1 for ch in testo if ch.isdigit())
-    if lettere < 3 or cifre > 0.3 * (lettere + cifre): return False
-    t = testo.strip()
-    return not (re.search(r"\d[\d.,]*\s*\S{0,2}$", t) or re.match(r"\d", t))     # un numero in coda (con o senza unita') o in testa e' il valore di un campo, non uno stato
+    """True if `testo` looks like an interface item: it has letters, while a counter is mostly digits."""
+    lettere = sum(1 for carattere in testo if carattere.isalpha())
+    cifre = sum(1 for carattere in testo if carattere.isdigit())
+    if lettere < 3 or cifre > 0.3 * (lettere + cifre):
+        return False
+    ripulito = testo.strip()
+    # A number at the end (with or without a unit) or at the start is a field value, not a state.
+    return not (re.search(r"\d[\d.,]*\s*\S{0,2}$", ripulito) or re.match(r"\d", ripulito))
 
 
 class Lettore:
-    """OCR rapidocr dei ritagli (solo librerie del venv); il motore si carica alla prima lettura."""
+    """OCR reader for crops, based on rapidocr (venv libraries only); the engine loads on first use."""
 
     def __init__(self):
-        self.motore = None; self.chiamate = 0
+        """Create the reader without loading the OCR engine yet."""
+        self.motore = None
+        self.chiamate = 0
 
     def leggi(self, immagine, origine):
+        """Run OCR on a crop and return [(text, confidence, [x0, y0, x1, y1])] in screen pixels.
+
+        `origine` is the [x, y] of the crop inside the screen; it is added to the boxes found.
+        """
         if self.motore is None:
             from rapidocr_onnxruntime import RapidOCR
-            # lato minimo 128: i ritagli sono bassi (35-100 px) e il valore di serie (736) li ingrandisce di 10-20 volte, 2 s a lettura per niente
-            self.motore = RapidOCR(intra_op_num_threads=1, inter_op_num_threads=1, det_limit_side_len=128, det_limit_type="min")
+            # Minimum side 128: the crops are short (35-100 px) and the default (736) magnifies them
+            # 10-20 times, 2 s per reading for nothing.
+            self.motore = RapidOCR(intra_op_num_threads=1, inter_op_num_threads=1,
+                                   det_limit_side_len=128, det_limit_type="min")
         self.chiamate += 1
         risultato, _ = self.motore(immagine, use_cls=False)
         righe = []
-        for q in (risultato or []):
-            xs = [p[0] for p in q[0]]; ys = [p[1] for p in q[0]]
-            righe.append((str(q[1]), float(q[2]), [int(min(xs)) + origine[0], int(min(ys)) + origine[1], int(max(xs)) + origine[0], int(max(ys)) + origine[1]]))
+        for elemento in (risultato or []):
+            ascisse = [punto[0] for punto in elemento[0]]
+            ordinate = [punto[1] for punto in elemento[0]]
+            righe.append((str(elemento[1]), float(elemento[2]),
+                          [int(min(ascisse)) + origine[0], int(min(ordinate)) + origine[1],
+                           int(max(ascisse)) + origine[0], int(max(ordinate)) + origine[1]]))
         return righe
 
 
 def _stessa_voce_prima(righe_prima, riquadro, testo):
-    """Un controllo che cambia stato aveva gia' la stessa scritta nello stesso posto: una comparsa o un testo diverso no."""
-    for t, conf, r in righe_prima:
-        ix = max(0, min(riquadro[2], r[2]) - max(riquadro[0], r[0])); iy = max(0, min(riquadro[3], r[3]) - max(riquadro[1], r[1]))
-        area = float(max(1, min((riquadro[2]-riquadro[0])*(riquadro[3]-riquadro[1]), (r[2]-r[0])*(r[3]-r[1]))))
-        if ix * iy >= 0.4 * area and dig(t) == dig(testo):
-            a, b = let(pulisci_ocr(t)), let(testo)
-            if ratio(pulisci_ocr(t), testo) >= 0.7 or (len(a) >= 6 and a in b) or (len(b) >= 6 and b in a): return True      # la lettura puo' perdere le prime lettere
+    """True if the control already had the same label in the same place before the change.
+
+    A control that changes state was there with the same text; an item that just appeared or whose text
+    differs is not a state change. `righe_prima` is the OCR of the frame before.
+    """
+    for testo_prima, conf, riquadro_prima in righe_prima:
+        sovr_x = max(0, min(riquadro[2], riquadro_prima[2]) - max(riquadro[0], riquadro_prima[0]))
+        sovr_y = max(0, min(riquadro[3], riquadro_prima[3]) - max(riquadro[1], riquadro_prima[1]))
+        area = float(max(1, min((riquadro[2]-riquadro[0])*(riquadro[3]-riquadro[1]),
+                                (riquadro_prima[2]-riquadro_prima[0])*(riquadro_prima[3]-riquadro_prima[1]))))
+        if sovr_x * sovr_y >= 0.4 * area and dig(testo_prima) == dig(testo):
+            lettere_prima = let(pulisci_ocr(testo_prima))
+            lettere_dopo = let(testo)
+            # The reading can lose the first letters.
+            if (ratio(pulisci_ocr(testo_prima), testo) >= 0.7
+                    or (len(lettere_prima) >= 6 and lettere_prima in lettere_dopo)
+                    or (len(lettere_dopo) >= 6 and lettere_dopo in lettere_prima)):
+                return True
     return False
 
 
-def _migliore_coperta(c, righe):
-    """Fra le scritte ricoperte dal cambio, quella il cui controllo cambia di piu': (testo, riquadro, stato) o None."""
-    bx0, by0, bx1, by1 = c["scatola"]; ox, oy = c["origine"]; migliore = None
-    for testo, conf, r in righe:
-        if conf < CONF_NOME: continue
-        ix = max(0, min(bx1, r[2]) - max(bx0, r[0])); iy = max(0, min(by1, r[3]) - max(by0, r[1]))
-        if ix * iy < 0.4 * max(1, (r[2]-r[0])*(r[3]-r[1])): continue
+def _migliore_coperta(candidato, righe):
+    """Among the texts covered by the change, pick the one whose control changes most.
+
+    Returns (name, box, state) or None. `candidato` is a candidate dict with its crops, `righe` the OCR lines.
+    """
+    bx0, by0, bx1, by1 = candidato["scatola"]
+    ox, oy = candidato["origine"]
+    migliore = None
+    for testo, conf, riquadro in righe:
+        if conf < CONF_NOME:
+            continue
+        sovr_x = max(0, min(bx1, riquadro[2]) - max(bx0, riquadro[0]))
+        sovr_y = max(0, min(by1, riquadro[3]) - max(by0, riquadro[1]))
+        if sovr_x * sovr_y < 0.4 * max(1, (riquadro[2]-riquadro[0])*(riquadro[3]-riquadro[1])):
+            continue
         nome = pulisci_ocr(testo)
-        if not e_voce(nome): continue
-        stato = misura_stato(c["prima"], c["dopo"], [r[0] - ox, r[1] - oy, r[2] - ox, r[3] - oy])
-        if stato is not None and (migliore is None or stato["delta"] > migliore[2]["delta"]): migliore = (nome, r, stato)
+        if not e_voce(nome):
+            continue
+        stato = misura_stato(candidato["prima"], candidato["dopo"],
+                             [riquadro[0] - ox, riquadro[1] - oy, riquadro[2] - ox, riquadro[3] - oy])
+        if stato is not None and (migliore is None or stato["delta"] > migliore[2]["delta"]):
+            migliore = (nome, riquadro, stato)
     return migliore
 
 
 def nomina(candidati, lettore, larghezza, altezza, stat, diario=None):
-    """Da ogni candidato a un cambio con nome e verso; scarta chi non ha un nome, un numero che cambia, un controllo che non cambia.
-    `diario`, se dato, raccoglie l'esito di ogni candidato (per capire perche' un fatto manca)."""
+    """Turn candidates into named changes with a direction; drop the ones that cannot be used.
+
+    Dropped: no name, a changing number, a control that does not change. `stat` counts the reasons.
+    `diario`, if given, collects the outcome of every candidate (to see why a fact is missing).
+    Returns a list of change dicts with normalised zones.
+    """
     cambi = []
-    def esito(c, motivo, testo=""):
-        if diario is not None: diario.append({"t": c["t"], "scatola": c["scatola"], "delta": round(c["misure"]["delta"], 1), "estremi": round(c["misure"].get("estremi", 0.0), 2), "esito": motivo, "testo": testo})
-    ordinati = sorted(candidati, key=lambda c: -c["misure"]["delta"])
-    if len(ordinati) > MAX_OCR: stat["oltre il tetto OCR"] += len(ordinati) - MAX_OCR
-    for c in ordinati[:MAX_OCR]:
-        righe = lettore.leggi(c["dopo"], c["origine"])
-        scelta = scegli_etichetta(c["scatola"], righe)
-        if scelta is None: stat["senza nome"] += 1; esito(c, "senza nome", " | ".join(r[0] for r in righe)[:60]); continue
+
+    def esito(candidato, motivo, testo=""):
+        """Append one diary row for `candidato` when the diary is enabled."""
+        if diario is not None:
+            diario.append({"t": candidato["t"], "scatola": candidato["scatola"],
+                           "delta": round(candidato["misure"]["delta"], 1),
+                           "estremi": round(candidato["misure"].get("estremi", 0.0), 2),
+                           "esito": motivo, "testo": testo})
+
+    ordinati = sorted(candidati, key=lambda candidato: -candidato["misure"]["delta"])
+    if len(ordinati) > MAX_OCR:
+        stat["oltre il tetto OCR"] += len(ordinati) - MAX_OCR
+    for candidato in ordinati[:MAX_OCR]:
+        righe = lettore.leggi(candidato["dopo"], candidato["origine"])
+        scelta = scegli_etichetta(candidato["scatola"], righe)
+        if scelta is None:
+            stat["senza nome"] += 1
+            esito(candidato, "senza nome", " | ".join(riga[0] for riga in righe)[:60])
+            continue
         testo, riquadro, relazione = scelta
-        if relazione == "dentro" and _pallino_in_testa(c["scatola"], riquadro):      # pallino letto dentro la riga: la scritta si rilegge solo a destra del pallino
-            ox, oy = c["origine"]; bx1 = c["scatola"][2] + 2; cy = (c["scatola"][1] + c["scatola"][3]) / 2.0
-            vicine = [r for r in lettore.leggi(c["dopo"][:, max(0, bx1 - ox):], [bx1, oy]) if r[1] >= CONF_NOME and r[2][1] <= cy <= r[2][3]]
-            if vicine: testo, _, riquadro = max(vicine, key=lambda q: q[2][2] - q[2][0]); relazione = "accanto"
-        if relazione == "dentro": stat["valore che cambia"] += 1; esito(c, "valore che cambia", testo); continue
+        # Dot read inside the line: the label is re-read only to the right of the dot.
+        if relazione == "dentro" and _pallino_in_testa(candidato["scatola"], riquadro):
+            ox, oy = candidato["origine"]
+            bx1 = candidato["scatola"][2] + 2
+            centro_y = (candidato["scatola"][1] + candidato["scatola"][3]) / 2.0
+            vicine = [riga for riga in lettore.leggi(candidato["dopo"][:, max(0, bx1 - ox):], [bx1, oy])
+                      if riga[1] >= CONF_NOME and riga[2][1] <= centro_y <= riga[2][3]]
+            if vicine:
+                testo, _, riquadro = max(vicine, key=lambda riga: riga[2][2] - riga[2][0])
+                relazione = "accanto"
+        if relazione == "dentro":
+            stat["valore che cambia"] += 1
+            esito(candidato, "valore che cambia", testo)
+            continue
         testo = pulisci_ocr(testo)
-        if not e_voce(testo): stat["non e una voce"] += 1; esito(c, "non e una voce", testo); continue
-        ox, oy = c["origine"]
-        locale = [riquadro[0] - ox, riquadro[1] - oy, riquadro[2] - ox, riquadro[3] - oy] if relazione == "copre" else [c["scatola"][0] - ox, c["scatola"][1] - oy, c["scatola"][2] - ox, c["scatola"][3] - oy]
-        stato = misura_stato(c["prima"], c["dopo"], locale)
-        if relazione == "copre":                           # il cambio ricopre piu' scritte (un cerchio disegnato attorno): e' quella che cambia di piu'
-            migliore = _migliore_coperta(c, righe)
-            if migliore is not None and (stato is None or migliore[2]["delta"] > stato["delta"]): testo, riquadro, stato = migliore
-        if stato is None: stat["il controllo non cambia"] += 1; esito(c, "il controllo non cambia", testo); continue
-        if not _stessa_voce_prima(lettore.leggi(c["prima"], c["origine"]), riquadro, testo): stat["prima non c'era (comparsa, scritta cambiata)"] += 1; esito(c, "prima non c'era", testo); continue
-        esito(c, "ok " + stato["verso"], testo)
-        x0, y0, x1, y1 = riquadro if relazione == "copre" else c["scatola"]
+        if not e_voce(testo):
+            stat["non e una voce"] += 1
+            esito(candidato, "non e una voce", testo)
+            continue
+        ox, oy = candidato["origine"]
+        if relazione == "copre":
+            locale = [riquadro[0] - ox, riquadro[1] - oy, riquadro[2] - ox, riquadro[3] - oy]
+        else:
+            scat = candidato["scatola"]
+            locale = [scat[0] - ox, scat[1] - oy, scat[2] - ox, scat[3] - oy]
+        stato = misura_stato(candidato["prima"], candidato["dopo"], locale)
+        # The change covers several texts (a circle drawn around them): the one that changes most wins.
+        if relazione == "copre":
+            migliore = _migliore_coperta(candidato, righe)
+            if migliore is not None and (stato is None or migliore[2]["delta"] > stato["delta"]):
+                testo, riquadro, stato = migliore
+        if stato is None:
+            stat["il controllo non cambia"] += 1
+            esito(candidato, "il controllo non cambia", testo)
+            continue
+        if not _stessa_voce_prima(lettore.leggi(candidato["prima"], candidato["origine"]), riquadro, testo):
+            stat["prima non c'era (comparsa, scritta cambiata)"] += 1
+            esito(candidato, "prima non c'era", testo)
+            continue
+        esito(candidato, "ok " + stato["verso"], testo)
+        x0, y0, x1, y1 = riquadro if relazione == "copre" else candidato["scatola"]
         zona = [x0 / float(larghezza), y0 / float(altezza), x1 / float(larghezza), y1 / float(altezza)]
-        cambi.append({"t": c["t"], "testo": testo[:80], "zona_norm": [min(1.0, max(0.0, v)) for v in zona], "delta": stato["delta"], "stato": stato["verso"], "rif": [], "relazione": relazione})
+        cambi.append({"t": candidato["t"], "testo": testo[:MAX_TESTO],
+                      "zona_norm": [min(1.0, max(0.0, valore)) for valore in zona],
+                      "delta": stato["delta"], "stato": stato["verso"], "rif": [], "relazione": relazione})
     return cambi
 
 
-# ---------------------------------------------------------------- funzione pura
-def _allineate(z1, z2):
-    h1 = max(1e-6, z1[3] - z1[1]); h2 = max(1e-6, z2[3] - z2[1])
-    if not 0.5 <= h1 / h2 <= 2.0: return False
-    stessa_riga = abs((z1[1]+z1[3])/2.0 - (z2[1]+z2[3])/2.0) <= 0.8 * max(h1, h2)
-    stessa_colonna = abs(z1[0] - z2[0]) <= max(0.006, 0.75 * max(h1, h2))
+# ---------------------------------------------------------------- pure function
+def _allineate(zona_a, zona_b):
+    """True if two normalised zones have similar heights and share a row or a column."""
+    altezza_a = max(1e-6, zona_a[3] - zona_a[1])
+    altezza_b = max(1e-6, zona_b[3] - zona_b[1])
+    if not 0.5 <= altezza_a / altezza_b <= 2.0:
+        return False
+    centro_a = (zona_a[1]+zona_a[3])/2.0
+    centro_b = (zona_b[1]+zona_b[3])/2.0
+    stessa_riga = abs(centro_a - centro_b) <= 0.8 * max(altezza_a, altezza_b)
+    stessa_colonna = abs(zona_a[0] - zona_b[0]) <= max(0.006, 0.75 * max(altezza_a, altezza_b))
     return stessa_riga or stessa_colonna
 
 
 def _evento(t, durata, tipo, zona, testo, forza, rif, dati, stampa="riga"):
-    zona = [round(float(x), 4) for x in zona]
+    """Build one event dict of the common schema, rounding time, zone and strength; `punto` is the centre."""
+    zona = [round(float(valore), 4) for valore in zona]
     return {"t": round(float(t), 2), "durata": round(float(durata), 2), "tipo": tipo, "zona": zona,
-            "punto": [round((zona[0]+zona[2])/2.0, 4), round((zona[1]+zona[3])/2.0, 4)], "testo": testo[:80],
-            "forza": round(float(forza), 4), "stampa": stampa, "rif": list(rif), "dati": dati}
+            "punto": [round((zona[0]+zona[2])/2.0, 4), round((zona[1]+zona[3])/2.0, 4)],
+            "testo": testo[:MAX_TESTO], "forza": round(float(forza), 4), "stampa": stampa,
+            "rif": list(rif), "dati": dati}
 
 
 def _limita(eventi_ordinati, massimo=MAX_PER_MINUTO, finestra=60.0):
-    """Al massimo `massimo` eventi in qualunque finestra di `finestra` secondi; restano i piu' forti."""
+    """Cap the events to `massimo` in any window of `finestra` seconds, keeping the strongest.
+
+    Returns the kept events sorted by time, type and text.
+    """
     tenuti = []
-    for e in sorted(eventi_ordinati, key=lambda x: (-x["forza"], x["t"])):
-        tempi = sorted([x["t"] for x in tenuti] + [e["t"]])
-        if any(tempi[j+massimo] - tempi[j] < finestra for j in range(0, len(tempi) - massimo)): continue
-        tenuti.append(e)
-    return sorted(tenuti, key=lambda x: (x["t"], x["tipo"], x["testo"]))
+    for evento in sorted(eventi_ordinati, key=lambda dato: (-dato["forza"], dato["t"])):
+        tempi = sorted([tenuto["t"] for tenuto in tenuti] + [evento["t"]])
+        if any(tempi[j+massimo] - tempi[j] < finestra for j in range(0, len(tempi) - massimo)):
+            continue
+        tenuti.append(evento)
+    return sorted(tenuti, key=lambda dato: (dato["t"], dato["tipo"], dato["testo"]))
 
 
 def parlato(testo, parole, t, raggio=20.0):
-    """Quanta parte delle parole della voce (minuscole, almeno 3 lettere) si sente a voce entro `raggio` secondi da t (0..1)."""
-    tokens = [w for w in (''.join(ch for ch in p.lower() if ch.isalpha()) for p in testo.split()) if len(w) >= 3]
-    if not tokens: return 0.0
-    dette = [''.join(ch for ch in str(w[2]).lower() if ch.isalpha()) for w in parole if len(w) >= 3 and w[0] - raggio <= t <= w[1] + raggio]
-    trovati = sum(1 for tok in tokens if any(tok == d or (len(tok) >= 5 and len(d) >= 5 and ratio(tok, d) >= 0.85) for d in dette))
+    """Fraction (0..1) of the words of `testo` (lowercase, 3+ letters) heard within `raggio` s of time `t`.
+
+    `parole` is the list of spoken words as (start, end, text). A word counts when it matches exactly,
+    or, for words of 5+ letters, when its similarity ratio is at least 0.85.
+    """
+    tokens = []
+    for pezzo in testo.split():
+        parola = "".join(carattere for carattere in pezzo.lower() if carattere.isalpha())
+        if len(parola) >= 3:
+            tokens.append(parola)
+    if not tokens:
+        return 0.0
+    dette = []
+    for parola in parole:
+        if len(parola) >= 3 and parola[0] - raggio <= t <= parola[1] + raggio:
+            dette.append("".join(carattere for carattere in str(parola[2]).lower() if carattere.isalpha()))
+    trovati = 0
+    for tok in tokens:
+        for detta in dette:
+            if tok == detta or (len(tok) >= 5 and len(detta) >= 5 and ratio(tok, detta) >= 0.85):
+                trovati += 1
+                break
     return trovati / float(len(tokens))
 
 
 def vicino_a_parola(t, parole, raggio=1.4):
-    """True se una parola della voce cade entro `raggio` secondi da t: l'evento trova una frase a cui agganciarsi."""
-    return any(w[0] - raggio <= t <= w[1] + raggio for w in parole if len(w) >= 2)
+    """True if a spoken word falls within `raggio` seconds of `t`: the event has a sentence to attach to."""
+    return any(parola[0] - raggio <= t <= parola[1] + raggio for parola in parole if len(parola) >= 2)
 
 
 def _punteggio(cambio, parole):
+    """Score a change: 40% its colour delta (saturating at 60) plus 60% how much of its text is spoken."""
     return 0.4 * min(1.0, cambio["delta"] / 60.0) + 0.6 * parlato(cambio["testo"], parole, cambio["t"])
 
 
-def _stessa_voce(p, q):
-    a, b = p["testo"].lower(), q["testo"].lower()
-    sovrapposte = _iou(p["zona_norm"], q["zona_norm"]) > 0.2
-    return a == b or a in b or b in a or ratio(a, b) >= 0.8 or sovrapposte
+def _forza_voce_scelta(testo, t, parole):
+    """Strength of a chosen item at time `t`, scoring it with the assumed delta DELTA_VOCE_SCELTA."""
+    punteggio = _punteggio({"delta": DELTA_VOCE_SCELTA, "testo": testo, "t": t}, parole)
+    return FORZA_BASE + FORZA_PESO * min(1.0, punteggio)
+
+
+def _stessa_voce(primo, secondo):
+    """True if two changes name the same item: equal or contained text, similar text, or overlapping zones."""
+    testo_a, testo_b = primo["testo"].lower(), secondo["testo"].lower()
+    sovrapposte = _iou(primo["zona_norm"], secondo["zona_norm"]) > 0.2
+    return (testo_a == testo_b or testo_a in testo_b or testo_b in testo_a
+            or ratio(testo_a, testo_b) >= 0.8 or sovrapposte)
 
 
 def _fondi_vicini(cambi, parole):
-    """Un bottone che cambia da' piu' frammenti (il bordo, la scritta): resta quello col punteggio migliore."""
+    """Merge fragments of one button change (border, label), keeping the best-scoring one within 1.5 s."""
     tenuti = []
-    for c in sorted(cambi, key=lambda x: (-_punteggio(x, parole), x["t"])):
-        if any(abs(c["t"] - u["t"]) <= 1.5 and _stessa_voce(c, u) for u in tenuti): continue
-        tenuti.append(c)
-    return sorted(tenuti, key=lambda x: x["t"])
+    for cambio in sorted(cambi, key=lambda dato: (-_punteggio(dato, parole), dato["t"])):
+        if any(abs(cambio["t"] - tenuto["t"]) <= 1.5 and _stessa_voce(cambio, tenuto) for tenuto in tenuti):
+            continue
+        tenuti.append(cambio)
+    return sorted(tenuti, key=lambda dato: dato["t"])
 
 
 def calcola(dati):
-    """Funzione pura: osservazioni e cambi entrano, eventi schema unico escono."""
+    """Turn the observations and changes in `dati` into events of the common schema.
+
+    `dati` holds readings, bars, changes, cursor track and spoken words. A chosen item needs a stable
+    background and a spoken mention; two opposite aligned changes become a choice; the result is capped
+    per minute and, with SOLO_CON_VOCE, limited to events near a spoken word. Free of side effects.
+    """
     risultato, attive = [], {}
-    cursori = dati.get("cursori", []); parole = dati.get("parole", [])
-    for lettura in sorted(dati.get("letture", []), key=lambda x: x["t"]):
+    cursori = dati.get("cursori", [])
+    parole = dati.get("parole", [])
+    for lettura in sorted(dati.get("letture", []), key=lambda dato: dato["t"]):
         voci = lettura["voci"]
-        dopo = scelte([dict(v, lab=v.get("lab2", v.get("lab"))) for v in voci])                 # la stessa voce e' ancora scelta 1 s dopo?
-        confermate = set(v["testo"] for v in dopo)
+        # Is the same item still chosen 1 s later?
+        dopo = scelte([dict(voce, lab=voce.get("lab2", voce.get("lab"))) for voce in voci])
+        confermate = set(voce["testo"] for voce in dopo)
         ora = {}
         for voce in scelte(voci):
             nome = pulisci_ocr(voce["testo"])
-            if voce["testo"] in confermate and voce.get("forza", 1.0) >= 0.85 and e_voce(nome) and _cursore_fuori(cursori, lettura["t"], voce["zona_norm"]): ora[nome] = voce       # col cursore sopra e' solo il passaggio del mouse
-        attive = {k: v for k, v in attive.items() if k in ora}
+            # With the cursor over it, it is only the mouse passing.
+            if (voce["testo"] in confermate and voce.get("forza", 1.0) >= 0.85 and e_voce(nome)
+                    and _cursore_fuori(cursori, lettura["t"], voce["zona_norm"])):
+                ora[nome] = voce
+        attive = {chiave: voce for chiave, voce in attive.items() if chiave in ora}
         for chiave, voce in ora.items():
-            if chiave in attive: continue                                                       # gia' segnalata nella lettura precedente
-            attive[chiave] = voce; zona = voce["zona_norm"]
-            if parlato(chiave, parole, lettura["t"]) < 0.5: continue                            # una voce evidenziata e' notizia solo se se ne parla a voce
-            risultato.append(_evento(lettura["t"], 1.0, "scelto", zona, chiave, 0.5 + 0.49 * min(1.0, _punteggio({"delta": 40.0, "testo": chiave, "t": lettura["t"]}, parole)), [], {"dove": eventi.dove(zona)}))
-    for barra in dati.get("barre", []):                    # voce evidenziata in una zona che non cambia: vale solo se se ne parla a voce
-        if not e_voce(barra["testo"]) or parlato(barra["testo"], parole, barra["t"]) < 0.5: continue
-        zona = barra["zona_norm"]; risultato.append(_evento(barra["t"], 0.0, "scelto", zona, barra["testo"], 0.5 + 0.49 * min(1.0, _punteggio({"delta": 40.0, "testo": barra["testo"], "t": barra["t"]}, parole)), [], {"dove": eventi.dove(zona)}))
+            # Already reported in the previous reading.
+            if chiave in attive:
+                continue
+            attive[chiave] = voce
+            zona = voce["zona_norm"]
+            # A highlighted item is news only if it is mentioned aloud.
+            if parlato(chiave, parole, lettura["t"]) < 0.5:
+                continue
+            forza = _forza_voce_scelta(chiave, lettura["t"], parole)
+            risultato.append(_evento(lettura["t"], 1.0, "scelto", zona, chiave, forza, [],
+                                     {"dove": eventi.dove(zona)}))
+    # Item highlighted in a zone that never changes: it counts only if it is mentioned aloud.
+    for barra in dati.get("barre", []):
+        if not e_voce(barra["testo"]) or parlato(barra["testo"], parole, barra["t"]) < 0.5:
+            continue
+        zona = barra["zona_norm"]
+        forza = _forza_voce_scelta(barra["testo"], barra["t"], parole)
+        risultato.append(_evento(barra["t"], 0.0, "scelto", zona, barra["testo"], forza, [],
+                                 {"dove": eventi.dove(zona)}))
     cambi, ultimo = [], {}
-    for cambio in sorted(dati.get("cambi", []), key=lambda x: x["t"]):
+    for cambio in sorted(dati.get("cambi", []), key=lambda dato: dato["t"]):
         chiave = (cambio["testo"], cambio["stato"])
-        if chiave in ultimo and cambio["t"]-ultimo[chiave] <= 1.0: continue
-        ultimo[chiave] = cambio["t"]; cambi.append(dict(cambio))
+        if chiave in ultimo and cambio["t"]-ultimo[chiave] <= 1.0:
+            continue
+        ultimo[chiave] = cambio["t"]
+        cambi.append(dict(cambio))
     cambi = _fondi_vicini(cambi, parole)
     persi = set()
-    for i, nuovo in enumerate(cambi):                      # una si accende e un'altra, allineata, si spegne: e' una scelta
-        if nuovo["stato"] != "acceso": continue
+    # One turns on and another, aligned, turns off: it is a choice.
+    for i, nuovo in enumerate(cambi):
+        if nuovo["stato"] != "acceso":
+            continue
         for j, vecchio in enumerate(cambi):
-            if vecchio["stato"] == "spento" and j not in persi and vecchio["testo"] != nuovo["testo"] and abs(vecchio["t"]-nuovo["t"]) <= 1.5 and _allineate(vecchio["zona_norm"], nuovo["zona_norm"]):
-                nuovo["scelta"] = True; persi.add(j); break
+            if (vecchio["stato"] == "spento" and j not in persi and vecchio["testo"] != nuovo["testo"]
+                    and abs(vecchio["t"]-nuovo["t"]) <= 1.5
+                    and _allineate(vecchio["zona_norm"], nuovo["zona_norm"])):
+                nuovo["scelta"] = True
+                persi.add(j)
+                break
     for i, cambio in enumerate(cambi):
-        if i in persi: continue
-        zona = cambio["zona_norm"]; forza = 0.5 + 0.49 * min(1.0, _punteggio(cambio, parole))
-        if cambio.get("scelta"): risultato.append(_evento(cambio["t"], 0.0, "scelto", zona, cambio["testo"], forza, cambio.get("rif", []), {"dove": eventi.dove(zona)}))
-        else: risultato.append(_evento(cambio["t"], 0.0, "cambio", zona, cambio["testo"], forza, cambio.get("rif", []), {"stato": cambio["stato"]}))
-    unici = []                                             # la stessa voce scelta letta ferma e vista cambiare: resta il cambio (l'istante giusto)
-    for e in sorted(risultato, key=lambda x: (0 if x["durata"] == 0.0 else 1, x["t"])):
-        if any(u["tipo"] == "scelto" and e["tipo"] == "scelto" and u["testo"] == e["testo"] and abs(u["t"]-e["t"]) <= 3.0 for u in unici): continue
-        unici.append(e)
-    if SOLO_CON_VOCE: unici = [e for e in unici if vicino_a_parola(e["t"], parole)]
+        if i in persi:
+            continue
+        zona = cambio["zona_norm"]
+        forza = FORZA_BASE + FORZA_PESO * min(1.0, _punteggio(cambio, parole))
+        if cambio.get("scelta"):
+            risultato.append(_evento(cambio["t"], 0.0, "scelto", zona, cambio["testo"], forza,
+                                     cambio.get("rif", []), {"dove": eventi.dove(zona)}))
+        else:
+            risultato.append(_evento(cambio["t"], 0.0, "cambio", zona, cambio["testo"], forza,
+                                     cambio.get("rif", []), {"stato": cambio["stato"]}))
+    # The same chosen item read still and seen changing: the change stays (the right instant).
+    unici = []
+    for evento in sorted(risultato, key=lambda dato: (0 if dato["durata"] == 0.0 else 1, dato["t"])):
+        if any(tenuto["tipo"] == "scelto" and evento["tipo"] == "scelto"
+               and tenuto["testo"] == evento["testo"] and abs(tenuto["t"]-evento["t"]) <= 3.0
+               for tenuto in unici):
+            continue
+        unici.append(evento)
+    if SOLO_CON_VOCE:
+        unici = [evento for evento in unici if vicino_a_parola(evento["t"], parole)]
     finali = _limita(unici)
-    for n, evento in enumerate(finali, 1): evento["id"] = "E%d" % n; evento["canale"] = "stato"
+    for numero, evento in enumerate(finali, 1):
+        evento["id"] = "E%d" % numero
+        evento["canale"] = "stato"
     return finali
 
 
-# ---------------------------------------------------------------- lettura del video
+# ---------------------------------------------------------------- reading the video
 def fotogrammi(video, larghezza, altezza):
-    """Un fotogramma ogni 0,5 s, BGR, alla scala di ocr.py."""
-    import comune
-    comando = [comune.ffmpeg(), "-v", "error", "-skip_frame", "noref", "-i", video, "-vf", "fps=%d,scale=%d:%d" % (FPS, larghezza, altezza), "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
+    """Yield (number, BGR frame) for one frame every 0.5 s of `video`, scaled to `larghezza` x `altezza`.
+
+    Frames come from an ffmpeg pipe (keyframes only), at the scale used by ocr.py.
+    """
+    comando = [comune.ffmpeg(), "-v", "error", "-skip_frame", "noref", "-i", video, "-vf",
+               "fps=%d,scale=%d:%d" % (FPS, larghezza, altezza), "-f", "rawvideo", "-pix_fmt", "bgr24", "-"]
     processo = subprocess.Popen(comando, stdout=subprocess.PIPE)
-    n = 0
+    numero = 0
     try:
         while True:
             dati = processo.stdout.read(larghezza * altezza * 3)
-            if len(dati) < larghezza * altezza * 3: break
-            yield n, np.frombuffer(dati, np.uint8).reshape(altezza, larghezza, 3)
-            n += 1
+            if len(dati) < larghezza * altezza * 3:
+                break
+            yield numero, np.frombuffer(dati, np.uint8).reshape(altezza, larghezza, 3)
+            numero += 1
     finally:
-        processo.stdout.close(); processo.kill(); processo.wait()
+        processo.stdout.close()
+        processo.kill()
+        processo.wait()
 
 
 def _clic_cursore(lavoro):
+    """Read the clicks from eventi_cursore.json of the work folder as [(time, point, id)]."""
     doc = _json(os.path.join(lavoro, "eventi_cursore.json"), {})
-    return [(float(e["t"]), e.get("punto"), str(e.get("id"))) for e in doc.get("eventi", []) if e.get("tipo") == "clic" and e.get("id")]
+    return [(float(evento["t"]), evento.get("punto"), str(evento.get("id")))
+            for evento in doc.get("eventi", []) if evento.get("tipo") == "clic" and evento.get("id")]
 
 
 def _cursori(lavoro):
+    """Load the cursor track from cursore.json, falling back to the 'cur' samples of mov.json (normalised)."""
     denso = _json(os.path.join(lavoro, "cursore.json"), [])
     traccia = eventi.cursore_da_mov(denso)
-    if traccia: return traccia
+    if traccia:
+        return traccia
     mov = _json(os.path.join(lavoro, "mov.json"), {})
-    w = float(mov.get("W") or 1.0); h = float(mov.get("H") or 1.0)
-    convertiti = [[v[0], v[1]/w, v[2]/h, "", 1.0] for v in mov.get("cur", []) if isinstance(v, list) and len(v) >= 3]
+    w = float(mov.get("W") or 1.0)
+    h = float(mov.get("H") or 1.0)
+    convertiti = [[campione[0], campione[1]/w, campione[2]/h, "", 1.0]
+                  for campione in mov.get("cur", []) if isinstance(campione, list) and len(campione) >= 3]
     return eventi.cursore_da_mov(convertiti)
 
 
 def leggi(video, lavoro, lettore=None):
-    """Un solo passaggio sul video a 2 fps: colori delle voci di ocr3 per E1, cambi compatti per E2."""
-    import comune
+    """Read the video once at 2 fps and collect what `calcola` needs.
+
+    Gathers the item colours of the ocr3 readings (for E1), the compact changes with their names (for E2),
+    the highlighted bars, the cursor track and the spoken words from the work folder `lavoro`.
+    Returns the dict {letture, cambi, barre, cursori, parole, stat, diario}.
+    """
     ocr = _json(os.path.join(lavoro, "ocr3.json"), {})
     larghezza_video, altezza_video, _ = comune.info_video(video)
-    w = LARGHEZZA; h = int(round(altezza_video * w / float(larghezza_video) / 2.0) * 2)
-    ow = float(ocr.get("W") or w); oh = float(ocr.get("H") or h)
+    w = LARGHEZZA
+    h = int(round(altezza_video * w / float(larghezza_video) / 2.0) * 2)
+    larghezza_ocr = float(ocr.get("W") or w)
+    altezza_ocr = float(ocr.get("H") or h)
     grezze = {}
-    for g in ocr.get("letture", []):
-        if isinstance(g, list) and len(g) == 4: grezze.setdefault(int(round(float(g[0]) * FPS)), []).append(g)
-    letture = []; rileggere = {}; rivelatore = Rivelatore(w, h); stat = collections.Counter()
-    lettore = lettore or Lettore(); barre = Barre(lettore, w, h); ultimo = None; t_lettura = time.perf_counter()
-    for n, frame in fotogrammi(video, w, h):
-        rivelatore.aggiungi(frame); barre.aggiungi(n, frame); ultimo = frame
-        if n == 2 or (n > 0 and n % PASSO_CHIAVE == 0): barre.fotogramma_chiave(n, frame)
-        for lettura in rileggere.pop(n, []):               # un secondo dopo la lettura: il fondo delle stesse voci e' ancora quello?
-            for voce in lettura["voci"]: voce["lab2"] = colore_anello(frame, voce["zona"])
-        for t, xbase, ybase, valori in grezze.get(n, []):
+    for lettura_grezza in ocr.get("letture", []):
+        if isinstance(lettura_grezza, list) and len(lettura_grezza) == 4:
+            numero_frame = int(round(float(lettura_grezza[0]) * FPS))
+            grezze.setdefault(numero_frame, []).append(lettura_grezza)
+    letture = []
+    rileggere = {}
+    rivelatore = Rivelatore(w, h)
+    stat = collections.Counter()
+    lettore = lettore or Lettore()
+    barre = Barre(lettore, w, h)
+    ultimo = None
+    t_lettura = time.perf_counter()
+    for numero, frame in fotogrammi(video, w, h):
+        rivelatore.aggiungi(frame)
+        barre.aggiungi(numero, frame)
+        ultimo = frame
+        if numero == 2 or (numero > 0 and numero % PASSO_CHIAVE == 0):
+            barre.fotogramma_chiave(numero, frame)
+        # One second after the reading: is the background of the same items still the same?
+        for lettura in rileggere.pop(numero, []):
+            for voce in lettura["voci"]:
+                voce["lab2"] = colore_anello(frame, voce["zona"])
+        for tempo, xbase, ybase, valori in grezze.get(numero, []):
             voci = []
             for voce in valori:
-                if not isinstance(voce, list) or len(voce) < 6: continue
-                testo, forza, ax, ay, bx, by = voce[:6]; zona = [xbase+ax, ybase+ay, xbase+bx, ybase+by]
-                voci.append({"testo": str(testo)[:80], "forza": float(forza), "zona": zona, "zona_norm": [zona[0]/ow, zona[1]/oh, zona[2]/ow, zona[3]/oh], "lab": colore_anello(frame, zona)})
-            lettura = {"t": float(t), "voci": voci}; letture.append(lettura); rileggere.setdefault(n + 2, []).append(lettura)
-    if ultimo is not None: barre.fine(ultimo)
-    t_ocr = time.perf_counter(); stat["secondi_video"] = round(t_ocr - t_lettura, 1)
+                if not isinstance(voce, list) or len(voce) < 6:
+                    continue
+                testo, forza, ax, ay, bx, by = voce[:6]
+                zona = [xbase+ax, ybase+ay, xbase+bx, ybase+by]
+                voci.append({"testo": str(testo)[:MAX_TESTO], "forza": float(forza), "zona": zona,
+                             "zona_norm": [zona[0]/larghezza_ocr, zona[1]/altezza_ocr,
+                                           zona[2]/larghezza_ocr, zona[3]/altezza_ocr],
+                             "lab": colore_anello(frame, zona)})
+            lettura = {"t": float(tempo), "voci": voci}
+            letture.append(lettura)
+            rileggere.setdefault(numero + 2, []).append(lettura)
+    if ultimo is not None:
+        barre.fine(ultimo)
+    t_ocr = time.perf_counter()
+    stat["secondi_video"] = round(t_ocr - t_lettura, 1)
     candidati = rivelatore.fine()
-    stat.update(rivelatore.scartati); stat.update(barre.stat)
+    stat.update(rivelatore.scartati)
+    stat.update(barre.stat)
     diario = [] if comune.ambiente("STATO_DIARIO") else None
     cambi = nomina(candidati, lettore, w, h, stat, diario)
     parole = _json(os.path.join(lavoro, "parole.json"), [])
     clic = _clic_cursore(lavoro)
-    for cambio in cambi:                                   # un clic di D vicino al cambio lo conferma
-        z = cambio["zona_norm"]; m = 0.03
-        cambio["rif"] = [i for t, p, i in clic if -1.0 <= cambio["t"] - t <= 1.0 and p and z[0]-m <= p[0] <= z[2]+m and z[1]-m <= p[1] <= z[3]+m][:2]
+    # A click from channel D near the change confirms it.
+    for cambio in cambi:
+        zona = cambio["zona_norm"]
+        margine = 0.03
+        cambio["rif"] = [id_clic for t_clic, punto, id_clic in clic
+                         if -1.0 <= cambio["t"] - t_clic <= 1.0 and punto
+                         and zona[0]-margine <= punto[0] <= zona[2]+margine
+                         and zona[1]-margine <= punto[1] <= zona[3]+margine][:2]
     stat["secondi_ocr_cambi"] = round(time.perf_counter() - t_ocr, 1)
-    stat["intervalli"] = rivelatore.intervalli; stat["candidati"] = len(candidati); stat["ocr_chiamate"] = lettore.chiamate
-    return {"letture": letture, "cambi": cambi, "barre": barre.eventi, "cursori": _cursori(lavoro), "parole": parole, "stat": dict(stat), "diario": diario}
+    stat["intervalli"] = rivelatore.intervalli
+    stat["candidati"] = len(candidati)
+    stat["ocr_chiamate"] = lettore.chiamate
+    return {"letture": letture, "cambi": cambi, "barre": barre.eventi, "cursori": _cursori(lavoro),
+            "parole": parole, "stat": dict(stat), "diario": diario}
 
 
 def documento(eventi_calcolati, secondi, letture, extra=None):
+    """Build the eventi_stato.json document: schema header, run statistics (plus `extra`) and the events."""
     stat = {"secondi": round(float(secondi), 3), "letture": int(letture), "eventi": len(eventi_calcolati)}
-    if extra: stat.update(extra)
-    return {"schema": 1, "canale": "stato", "lettera": "E", "versione": VERSIONE, "sezione": "STATO", "legenda": LEGENDA,
-            "formati": dict(FORMATI), "stat": stat, "eventi": eventi_calcolati}
+    if extra:
+        stat.update(extra)
+    return {"schema": 1, "canale": "stato", "lettera": "E", "versione": VERSIONE, "sezione": "STATO",
+            "legenda": LEGENDA, "formati": dict(FORMATI), "stat": stat, "eventi": eventi_calcolati}
 
 
 def main(argv):
-    if len(argv) != 3: raise SystemExit("uso: canale_stato.py <video.mp4> <cartella _lavoro>")
-    video = os.path.abspath(argv[1]); lavoro = os.path.abspath(argv[2]); inizio = time.perf_counter()
-    dati = leggi(video, lavoro); calcolati = calcola(dati); secondi = time.perf_counter() - inizio
-    extra = dict(dati.get("stat", {})); extra["ram_picco_mb"] = ram_picco_mb()
-    eventi.scrivi(os.path.join(lavoro, "eventi_stato.json"), documento(calcolati, secondi, len(dati["letture"]), extra))
-    if dati.get("diario") is not None:                    # con DEMOBRIEF_STATO_DIARIO o il compatibile AD_MOVIOLA_STATO_DIARIO
+    """Command line entry: `canale_stato.py <video.mp4> <work folder>`.
+
+    Writes eventi_stato.json (and stato_diario.json when the diary is on) in the work folder and
+    prints a one-line summary.
+    """
+    if len(argv) != 3:
+        raise SystemExit("uso: canale_stato.py <video.mp4> <cartella _lavoro>")
+    video = os.path.abspath(argv[1])
+    lavoro = os.path.abspath(argv[2])
+    inizio = time.perf_counter()
+    dati = leggi(video, lavoro)
+    calcolati = calcola(dati)
+    secondi = time.perf_counter() - inizio
+    extra = dict(dati.get("stat", {}))
+    extra["ram_picco_mb"] = ram_picco_mb()
+    eventi.scrivi(os.path.join(lavoro, "eventi_stato.json"),
+                  documento(calcolati, secondi, len(dati["letture"]), extra))
+    # With DEMOBRIEF_STATO_DIARIO, or the compatible AD_MOVIOLA_STATO_DIARIO.
+    if dati.get("diario") is not None:
         with open(os.path.join(lavoro, "stato_diario.json"), "w", encoding="utf-8") as f:
-            json.dump({"candidati": dati["diario"], "barre": dati.get("barre", []), "cambi": dati.get("cambi", [])}, f, ensure_ascii=False)
-    print("canale_stato: eventi=%d letture=%d tempo=%.1fs ram_picco=%s MB scartati=%s" % (len(calcolati), len(dati["letture"]), secondi, extra["ram_picco_mb"], json.dumps(dati.get("stat", {}), ensure_ascii=False)))
+            json.dump({"candidati": dati["diario"], "barre": dati.get("barre", []),
+                       "cambi": dati.get("cambi", [])}, f, ensure_ascii=False)
+    print("canale_stato: eventi=%d letture=%d tempo=%.1fs ram_picco=%s MB scartati=%s"
+          % (len(calcolati), len(dati["letture"]), secondi, extra["ram_picco_mb"],
+             json.dumps(dati.get("stat", {}), ensure_ascii=False)))
 
 
 if __name__ == "__main__":

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.7.12
+
+- Whole-sentence preservation is now on by default; the agent skill suggests opening at most 32 frames.
+- Fixed: a video without an audio track no longer stops the run (empty transcript).
+- Fixed: the per-step time cap in parallel mode exits with code 4 instead of a traceback.
+- Fixed: a video with no declared duration no longer fails the story build (division by zero).
+- Fixed: the movement step can no longer stall on a full ffmpeg stderr pipe.
+- Fixed: reading a frame past the end of the video returns nothing instead of failing the eye step.
+- Fixed: the parallel OCR phases tolerate the shared cache file being locked.
+- Fixed: `-Uscita` ending with a backslash is passed correctly by leggi-video.ps1.
+- Fixed: broken accented characters in two installa.sh messages.
+- Fixed: downloads refuse live streams and files over 4 GB, with timeouts (60 s title, 2 h download).
+- Fixed: when the eye is switched off in config.json, the story header says so.
+
+## 0.7.10
+
+- Added tables read from SCREEN, whole-sentence preservation and table frames, all off by default.
+
+## 0.7.9
+
+- Added VALUES and WHERE sections, off by default.
+
 ## 0.7.8
 
 - Ran independent movement, transcription and OCR phases concurrently when memory permits.
