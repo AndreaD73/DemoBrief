@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.13
+
+- The Claude Code skill is now installed by default (`-SenzaSkill` / `--senza-skill` to skip).
+- The skill makes the agent work autonomously and save the complete document next to the video.
+- README: measured cost and coverage table, and a "How you use it" section (Italian and English).
+
 ## 0.7.12
 
 - Whole-sentence preservation is now on by default; the agent skill suggests opening at most 32 frames.

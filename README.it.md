@@ -10,18 +10,45 @@ Serve solo per le registrazioni dello schermo di tutorial di software. Non è un
 
 ## Perché DemoBrief
 
-Un tutorial di software di 4-5 minuti diventa un documento di circa 2.000-4.000 token. Su 7 tutorial reali, DemoBrief ha prodotto in media circa 3.000 token, contro circa 45.000 token di uno strumento basato sui fotogrammi che fa ispezionare il video a un agente.
+Un tutorial di software di 4-5 minuti diventa un documento di circa 3.000 token (2.000-4.000), più una cartella di fotogrammi che l'agente apre solo se gli servono.
+
+Costi misurati su 7 tutorial reali con Claude Opus (prezzi API, valori indicativi):
+
+| | Cosa legge l'agente | Costo medio a video | Fatti chiave colti |
+|---|---|---|---|
+| Video guardato direttamente (1 immagine ogni 2 secondi, circa 140 immagini) | decine di migliaia di token di immagini | circa 1,40 $ | 85% |
+| Solo `racconto.md` di DemoBrief | circa 3.000 token di testo | circa 0,30 $ | 71% |
+| `racconto.md` + circa 30 fotogrammi scelti dall'agente | 3.000 token + circa 30 immagini | circa 0,65 $ | 80% |
+
+In breve: con DemoBrief si spende circa la metà (con le immagini) o un quinto (solo testo) e si colgono quasi tutti i fatti che coglie l'agente davanti al video intero. Non lo sostituisce al cento per cento: le tabelle di dati dei gestionali, ad esempio, si perdono ancora in parte. Cifre dal nostro banco di prova su 7 tutorial; su altri video i risultati possono variare.
 
 L'elaborazione è locale e gratuita: DemoBrief non usa nessun servizio in rete e non richiede nessuna chiave API.
 
 L'elaborazione richiede qualche minuto per video su un PC con scheda grafica NVIDIA, e più tempo su un computer senza scheda grafica.
 
-DemoBrief è un aiuto, o skill, per gli agenti AI e non un riassuntore autonomo:
+## Come si usa
 
-1. DemoBrief produce `racconto.md` e `fotogrammi/`.
-2. Si passa la cartella di uscita a un agente come Claude Code o Codex e gli si chiede di scrivere il documento di specifiche completo, aprendo solo le immagini che gli servono.
+Installa DemoBrief (vedi Installazione: si installa anche la skill per Claude Code), poi di' al tuo agente:
 
-L'agente legge poche migliaia di token invece di guardare il video originale.
+> Leggi questo video: `<file o link>`
+
+L'agente fa tutto da solo: lancia DemoBrief, legge `racconto.md`, apre i fotogrammi che gli servono e scrive il documento completo accanto al video. Tu non lanci comandi e non impari opzioni. Per Codex vedi `skill/AGENTS-codex.md`.
+
+## Cosa aspettarsi
+
+- Spazio: circa 2,5 GB per l'ambiente Python su Windows con scheda NVIDIA (circa 1,4 GB sono librerie CUDA, saltate senza scheda), più i modelli di voce e OCR scaricati al primo uso.
+- Tempo: circa 6 minuti per un tutorial di 5 minuti su un PC con scheda NVIDIA. Il tempo su un computer senza scheda non è stato misurato.
+- La skill per Claude Code viene scritta in `~/.claude/skills/leggi-video` (con `-SenzaSkill` / `--senza-skill` si salta).
+- Niente esce dal tuo computer, tranne il download di un video quando passi un link.
+- Interfaccia e messaggi dello strumento sono in italiano; il racconto segue la lingua del video.
+
+## Verificalo tu
+
+1. Guarda la dimensione di `racconto.md` (l'intestazione dà i token stimati).
+2. Chiedi al tuo agente di leggere la cartella e controlla il consumo che riporta (in Claude Code, `/context`).
+3. Fai all'agente 3-4 domande a cui solo il video sa rispondere (quale menu, quale valore, a che minuto) e confronta con il video.
+
+I video del banco di prova sono tutorial CC BY; in `example/` c'è l'uscita di uno di essi, non il video, che va scaricato dalla fonte originale prima del confronto.
 
 ## Piattaforme
 
@@ -65,7 +92,9 @@ powershell -ExecutionPolicy Bypass -File .\installa.ps1
 
 `installa.ps1` installa ffmpeg con winget quando ffmpeg manca e accetta gli accordi della sorgente e dei pacchetti di winget.
 
-Con `-SenzaModelli` si saltano i download dei modelli. Con `-InstallaSkill` si installa la skill per Claude Code.
+Con una scheda NVIDIA l'installazione scarica anche circa 1,4 GB di librerie CUDA per velocizzare la trascrizione; senza scheda le salta e usa il processore.
+
+Con `-SenzaModelli` si saltano i download dei modelli. Con `-SenzaSkill` non si installa la skill per Claude Code (di serie si installa).
 
 ### Linux
 
@@ -83,7 +112,7 @@ chmod +x installa.sh leggi-video.sh
 ./installa.sh
 ```
 
-Con `--senza-modelli` si saltano i download dei modelli. Con `--installa-skill` si installa la skill per Claude Code.
+Con `--senza-modelli` si saltano i download dei modelli. Con `--senza-skill` non si installa la skill per Claude Code (di serie si installa).
 
 ## Uso
 

@@ -9,6 +9,6 @@ The files below are derived from it (transcript excerpts and frames) and keep th
 |---|---|---|
 | [racconto.md](racconto.md) | Step 1 - DemoBrief output: compact timeline of speech, on-screen text and actions (~2,500 tokens for a 4:46 video) | DemoBrief, locally, 4 min 48 s |
 | [fotogrammi/](fotogrammi/) | Frames of the key actions. The full run saved 35; only the 8 used by the brief are kept here | DemoBrief |
-| [brief.md](brief.md) | Step 2 - the final illustrated brief, written by an AI agent reading **only** racconto.md and opening 8 frames | Claude (Sonnet), ~54k tokens, 40 s |
+| [brief.md](brief.md) | Step 2 - the final illustrated brief, written by an AI agent reading **only** racconto.md and opening 8 frames | Claude (Sonnet), 40 s. The session counted ~54k tokens in total, but most of that is the agent's own fixed context; the material it actually read is the ~2,500-token racconto.md plus 8 images |
 
 The legend inside racconto.md is in Italian (DemoBrief's interface language); the brief is in English.

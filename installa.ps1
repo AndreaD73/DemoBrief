@@ -1,6 +1,6 @@
 # Crea l'ambiente virtuale dello strumento e scarica i modelli richiesti.
-# Uso:  powershell -ExecutionPolicy Bypass -File installa.ps1 [-SenzaModelli] [-InstallaSkill]
-param([switch]$SenzaModelli, [switch]$InstallaSkill)
+# Uso:  powershell -ExecutionPolicy Bypass -File installa.ps1 [-SenzaModelli] [-SenzaSkill]
+param([switch]$SenzaModelli, [switch]$SenzaSkill)
 $ErrorActionPreference = 'Stop'
 $qui = $PSScriptRoot
 $venv = Join-Path $qui 'venv'
@@ -80,7 +80,7 @@ try {
 } catch {
     Write-Warning 'Ollama non risponde: il racconto uscira'' senza righe VISTA (installare Ollama per averle).'
 }
-if ($InstallaSkill) {
+if (-not $SenzaSkill) {
     Passo 'Installo la skill per Claude Code (cartella utente)'
     $dest = Join-Path $env:USERPROFILE '.claude\skills\leggi-video'
     New-Item -ItemType Directory -Force $dest | Out-Null
@@ -89,4 +89,4 @@ if ($InstallaSkill) {
     Write-Host ('    ' + $dest)
 }
 Write-Host ''
-Write-Host 'DemoBrief installato. Uso:  .\leggi-video.ps1 <file video oppure URL>' -ForegroundColor Green
+Write-Host 'DemoBrief installato. Ora di' al tuo agente: Leggi questo video: <file o link>' -ForegroundColor Green

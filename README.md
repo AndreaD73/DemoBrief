@@ -10,18 +10,45 @@ It is designed only for screen recordings of software tutorials. It is not a gen
 
 ## Why DemoBrief
 
-A 4-5 minute software tutorial becomes a brief of about 2,000-4,000 tokens. Across 7 real tutorials, DemoBrief produced about 3,000 tokens on average, compared with about 45,000 tokens for a frame-based tool that makes an agent inspect the video.
+A 4-5 minute software tutorial becomes a brief of about 3,000 tokens (2,000-4,000), plus a folder of frames the agent opens only when it needs them.
+
+Measured on 7 real tutorials with Claude Opus (API prices, indicative):
+
+| | What the agent reads | Average cost per video | Key facts captured |
+|---|---|---|---|
+| Watching the video directly (1 image every 2 seconds, about 140 images) | tens of thousands of image tokens | about $1.40 | 85% |
+| DemoBrief `racconto.md` only | about 3,000 text tokens | about $0.30 | 71% |
+| `racconto.md` + about 30 frames chosen by the agent | 3,000 tokens + about 30 images | about $0.65 | 80% |
+
+In short: DemoBrief costs about half (with images) or a fifth (text only) and captures most of what an agent catches when it watches the whole video. It is not a 100% replacement: data tables in business applications, for example, are still partly lost. Figures come from our own benchmark on 7 tutorials; results on other videos may vary.
 
 Processing is local and free: DemoBrief uses no cloud service and requires no API key.
 
 Processing takes a few minutes per video on a PC with an NVIDIA GPU, and longer on a CPU-only computer.
 
-DemoBrief is an aid, or skill, for AI agents rather than an autonomous summarizer:
+## How you use it
 
-1. DemoBrief produces `racconto.md` and `fotogrammi/`.
-2. Pass the output folder to an agent such as Claude Code or Codex and ask it to write the complete specification document, opening only the images it needs.
+Install DemoBrief (see Installation: the skill for Claude Code is installed too), then tell your agent:
 
-The agent reads a few thousand tokens instead of watching the original video.
+> Read this video: `<file or link>`
+
+The agent does everything on its own: it runs DemoBrief, reads `racconto.md`, opens the frames it needs and writes the complete document next to the video. You do not run commands or learn options. For Codex, see `skill/AGENTS-codex.md`.
+
+## What to expect
+
+- Disk: about 2.5 GB for the Python environment on Windows with an NVIDIA GPU (about 1.4 GB of that is CUDA libraries, skipped without a GPU), plus the speech and OCR models downloaded on first run.
+- Time: about 6 minutes for a 5-minute tutorial on a PC with an NVIDIA GPU. Time on a CPU-only computer has not been measured.
+- The Claude Code skill is written to `~/.claude/skills/leggi-video` (use `-SenzaSkill` / `--senza-skill` to skip it).
+- Nothing leaves your computer, except the download of a video when you pass a link.
+- The interface and the messages of the tool are in Italian; the brief follows the language of the video.
+
+## Check it yourself
+
+1. Look at the size of `racconto.md` (the header gives the estimated tokens).
+2. Ask your agent to read the folder, then check the usage it reports (for Claude Code, `/context`).
+3. Ask the agent 3-4 questions that only the video can answer (which menu, which value, at what minute) and compare with the video.
+
+The benchmark videos are CC BY tutorials; `example/` holds the output for one of them, but not the video itself, so download it from its original source before comparing.
 
 ## Platforms
 
@@ -65,7 +92,9 @@ powershell -ExecutionPolicy Bypass -File .\installa.ps1
 
 `installa.ps1` installs ffmpeg with winget when ffmpeg is missing and accepts the winget source and package agreements.
 
-Add `-SenzaModelli` to skip model downloads. Add `-InstallaSkill` to install the Claude Code skill.
+With an NVIDIA GPU the installer also downloads about 1.4 GB of CUDA libraries to speed up transcription; without one it skips them and uses the CPU.
+
+Add `-SenzaModelli` to skip model downloads. Add `-SenzaSkill` to skip the Claude Code skill (installed by default).
 
 ### Linux
 
@@ -83,7 +112,7 @@ chmod +x installa.sh leggi-video.sh
 ./installa.sh
 ```
 
-Add `--senza-modelli` to skip model downloads. Add `--installa-skill` to install the Claude Code skill.
+Add `--senza-modelli` to skip model downloads. Add `--senza-skill` to skip the Claude Code skill (installed by default).
 
 ## Usage
 

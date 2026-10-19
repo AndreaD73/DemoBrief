@@ -25,7 +25,11 @@ Cartella dello strumento: `{{STRUMENTO}}`
    - Se risponde che lo strumento non e' installato, esegui prima `{{STRUMENTO}}\installa.ps1`.
 2. Leggi `<uscita>\racconto.md`. Le prime 3 righe dicono durata, token, fonti usate e legenda dei campi. Ogni riga e' un istante: `[mm:ss] VOCE "..." | TESTO ... | MOTO ... | VISTA ...`.
 3. Leggi `<uscita>\fotogrammi\indice.md` e apri **al massimo 32 fotogrammi**, scegliendo quelli che chiariscono di piu' (valori, finestre di dialogo, risultati visibili); se sono meno di 32, aprili tutti. Misurato sul banco di prova: rispetto al solo testo la resa sale di 10-16 punti, a circa 0,66 $ e 90 secondi per video; oltre 32 non migliora piu'.
-4. Rispondi all'utente unendo racconto e immagini. Se la riga di intestazione segnala che la VISTA e' assente, dillo: significa solo che mancano le righe con la forma della geometria, il resto e' completo.
+4. Scrivi tu il documento completo del video unendo racconto e immagini e salvalo accanto al video (`<nome-video>-documento.md`, con i riferimenti alle immagini usate). Poi rispondi all'utente con il riassunto e il percorso del file. Se la riga di intestazione segnala che la VISTA e' assente, dillo: significa solo che mancano le righe con la forma della geometria, il resto e' completo.
+
+## Autonomia
+
+L'utente non deve conoscere lo strumento: gli basta dire "leggi questo video". Fai tutto da solo, dall'installazione (se manca) al documento finale, senza chiedergli di lanciare comandi o di scegliere opzioni. Fermati solo se il video non e' accessibile.
 
 ## Attenzioni
 

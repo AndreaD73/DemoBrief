@@ -5,12 +5,12 @@ QUI="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 VENV="$QUI/venv"
 PY="$VENV/bin/python"
 SENZA_MODELLI=0
-INSTALLA_SKILL=0
+INSTALLA_SKILL=1
 
 for argomento in "$@"; do
     case "$argomento" in
         --senza-modelli) SENZA_MODELLI=1 ;;
-        --installa-skill) INSTALLA_SKILL=1 ;;
+        --senza-skill) INSTALLA_SKILL=0 ;;
         *)
             printf '%s\n' "Opzione sconosciuta: $argomento" >&2
             exit 2
