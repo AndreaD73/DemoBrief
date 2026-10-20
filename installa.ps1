@@ -89,4 +89,4 @@ if (-not $SenzaSkill) {
     Write-Host ('    ' + $dest)
 }
 Write-Host ''
-Write-Host 'DemoBrief installato. Ora di' al tuo agente: Leggi questo video: <file o link>' -ForegroundColor Green
+Write-Host "DemoBrief installato. Ora di' al tuo agente: Leggi questo video: <file o link>" -ForegroundColor Green

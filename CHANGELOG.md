@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.15
+
+- Fixed: installa.ps1 did not parse in Windows PowerShell (stray quote in the final message), so the Windows install failed since 0.7.13. Added a test that parses every .ps1.
+
 ## 0.7.14
 
 - README: states plainly that DemoBrief saves tokens, not time (about real time on an RTX 3070), mentions OCR typos, adds the extra 11-minute check. No code change.
