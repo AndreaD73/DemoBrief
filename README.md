@@ -20,7 +20,7 @@ Measured on 7 real tutorials with Claude Opus (API prices, indicative):
 | DemoBrief `racconto.md` only | about 3,000 text tokens | about $0.30 | 71% |
 | `racconto.md` + about 30 frames chosen by the agent | 3,000 tokens + about 30 images | about $0.65 | 80% |
 
-In short: DemoBrief costs about half (with images) or a fifth (text only) and captures most of what an agent catches when it watches the whole video. It is not a 100% replacement: data tables in business applications, for example, are still partly lost. Figures come from our own benchmark on 7 tutorials; results on other videos may vary.
+In short: DemoBrief costs about half (with images) or a fifth (text only) and captures most of what an agent catches when it watches the whole video. It is not a 100% replacement: data tables in business applications, for example, are still partly lost. Figures come from our own benchmark on 7 tutorials, plus one 11-minute Blender tutorial checked afterwards (about 5,800 tokens; an agent reading it used about 2.4 times fewer tokens than one watching all frames); results on other videos may vary.
 
 Processing is local and free: DemoBrief uses no cloud service and requires no API key.
 
@@ -37,7 +37,8 @@ The agent does everything on its own: it runs DemoBrief, reads `racconto.md`, op
 ## What to expect
 
 - Disk: about 2.5 GB for the Python environment on Windows with an NVIDIA GPU (about 1.4 GB of that is CUDA libraries, skipped without a GPU), plus the speech and OCR models downloaded on first run.
-- Time: about 6 minutes for a 5-minute tutorial on a PC with an NVIDIA GPU. Time on a CPU-only computer has not been measured.
+- Time: about 6 minutes for a 5-minute tutorial, and about 11 minutes for an 11-minute tutorial, on a PC with an NVIDIA RTX 3070 (roughly real time). DemoBrief saves tokens, not time: watching a video frame by frame can be faster. Time on a CPU-only computer has not been measured.
+- Accuracy: text read from the screen (OCR) can contain typos (for example "Vlewport" for "Viewport"); the agent can check the frames when it matters.
 - The Claude Code skill is written to `~/.claude/skills/leggi-video` (use `-SenzaSkill` / `--senza-skill` to skip it).
 - Nothing leaves your computer, except the download of a video when you pass a link.
 - The interface and the messages of the tool are in Italian; the brief follows the language of the video.

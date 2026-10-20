@@ -20,7 +20,7 @@ Costi misurati su 7 tutorial reali con Claude Opus (prezzi API, valori indicativ
 | Solo `racconto.md` di DemoBrief | circa 3.000 token di testo | circa 0,30 $ | 71% |
 | `racconto.md` + circa 30 fotogrammi scelti dall'agente | 3.000 token + circa 30 immagini | circa 0,65 $ | 80% |
 
-In breve: con DemoBrief si spende circa la metà (con le immagini) o un quinto (solo testo) e si colgono quasi tutti i fatti che coglie l'agente davanti al video intero. Non lo sostituisce al cento per cento: le tabelle di dati dei gestionali, ad esempio, si perdono ancora in parte. Cifre dal nostro banco di prova su 7 tutorial; su altri video i risultati possono variare.
+In breve: con DemoBrief si spende circa la metà (con le immagini) o un quinto (solo testo) e si colgono quasi tutti i fatti che coglie l'agente davanti al video intero. Non lo sostituisce al cento per cento: le tabelle di dati dei gestionali, ad esempio, si perdono ancora in parte. Cifre dal nostro banco di prova su 7 tutorial, più un tutorial Blender di 11 minuti controllato dopo (circa 5.800 token; un agente che lo legge così ha usato circa 2,4 volte meno token di uno che guarda tutti i fotogrammi); su altri video i risultati possono variare.
 
 L'elaborazione è locale e gratuita: DemoBrief non usa nessun servizio in rete e non richiede nessuna chiave API.
 
@@ -37,7 +37,8 @@ L'agente fa tutto da solo: lancia DemoBrief, legge `racconto.md`, apre i fotogra
 ## Cosa aspettarsi
 
 - Spazio: circa 2,5 GB per l'ambiente Python su Windows con scheda NVIDIA (circa 1,4 GB sono librerie CUDA, saltate senza scheda), più i modelli di voce e OCR scaricati al primo uso.
-- Tempo: circa 6 minuti per un tutorial di 5 minuti su un PC con scheda NVIDIA. Il tempo su un computer senza scheda non è stato misurato.
+- Tempo: circa 6 minuti per un tutorial di 5 minuti e circa 11 minuti per un tutorial di 11 minuti, su un PC con scheda NVIDIA RTX 3070 (più o meno in tempo reale). DemoBrief fa risparmiare token, non tempo: guardare un video fotogramma per fotogramma può essere più veloce. Il tempo su un computer senza scheda non è stato misurato.
+- Precisione: il testo letto dallo schermo (OCR) può contenere refusi (per esempio "Vlewport" al posto di "Viewport"); l'agente può controllare i fotogrammi quando conta.
 - La skill per Claude Code viene scritta in `~/.claude/skills/leggi-video` (con `-SenzaSkill` / `--senza-skill` si salta).
 - Niente esce dal tuo computer, tranne il download di un video quando passi un link.
 - Interfaccia e messaggi dello strumento sono in italiano; il racconto segue la lingua del video.

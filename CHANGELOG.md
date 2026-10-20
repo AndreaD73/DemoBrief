@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.14
+
+- README: states plainly that DemoBrief saves tokens, not time (about real time on an RTX 3070), mentions OCR typos, adds the extra 11-minute check. No code change.
+
 ## 0.7.13
 
 - The Claude Code skill is now installed by default (`-SenzaSkill` / `--senza-skill` to skip).
